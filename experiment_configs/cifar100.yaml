@@ -1,0 +1,39 @@
+# CIFAR-100 NoProp Training Configuration
+
+# Dataset settings
+dataset: "cifar100"
+batch_size: 128
+data_path: "./data"
+num_workers: 4
+augment: false  # Data augmentation for training set
+
+# Model architecture
+num_layers: 10  
+hidden_dim: 256
+
+# Training parameters
+epochs: 200  # Even more epochs for harder dataset
+learning_rate: 0.001
+weight_decay: 0.001
+
+# NoProp specific parameters
+timesteps: 10
+eta: 0.1
+
+# Optimization settings
+grad_clip_max_norm: 1.0
+embed_lr_multiplier: 0.1
+
+# Logging and saving
+log_interval: 100
+save_best: true
+save_final: true
+best_model_path: "best_cifar100_noprop_model.pt"
+final_model_path: "final_cifar100_noprop_model.pt"
+
+# Reproducibility
+seed: 42
+
+# Early stopping
+early_stopping: false
+early_stopping_accuracy: 75.0  # Lower target for CIFAR-100
