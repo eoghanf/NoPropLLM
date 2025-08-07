@@ -14,7 +14,7 @@ hidden_dim: 256
 # Training parameters
 epochs: 150  # More epochs needed for CIFAR
 learning_rate: 0.001
-weight_decay: 0.001
+weight_decay: 0.01
 
 # NoProp specific parameters  
 timesteps: 10
@@ -28,8 +28,8 @@ embed_lr_multiplier: 0.1
 log_interval: 100
 save_best: true
 save_final: true
-best_model_path: "best_cifar10_noprop_model.pt"
-final_model_path: "final_cifar10_noprop_model.pt"
+best_model_path: "checkpoints/best_cifar10_noprop_model.pt"
+final_model_path: "checkpoints/final_cifar10_noprop_model.pt"
 
 # Reproducibility
 seed: 42

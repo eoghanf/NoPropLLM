@@ -23,8 +23,12 @@ NoProp/
 │   ├── test_dataloaders.py # Data loading tests
 │   ├── test_utils.py      # Utility tests
 │   └── test_integration.py # Integration tests
+├── checkpoints/           # Model checkpoints
+│   └── test_checkpoints/  # Test checkpoints (isolated)
 ├── data/                  # Dataset storage (created automatically)
 ├── train_mnist.py         # MNIST training script
+├── train_cifar10.py       # CIFAR-10 training script
+├── train_cifar100.py      # CIFAR-100 training script
 ├── train_universal.py     # Universal training script
 └── MNISTTraining.py       # Legacy training script (deprecated)
 ```

@@ -229,7 +229,7 @@ class NoPropNetwork(nn.Module):
             noise = torch.randn_like(clean_embed)
         
         # Apply layer-specific noise: z_layer = (1 - noise_level) * clean + noise_level * noise
-        noisy_label = (1 - noise_level) * clean_embed + noise_level * noise
+        noisy_label = torch.sqrt(1 - noise_level) * clean_embed + torch.sqrt(noise_level) * noise
         
         return noisy_label
     

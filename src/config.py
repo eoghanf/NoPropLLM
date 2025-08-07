@@ -4,7 +4,6 @@ Loads configurations from YAML files in experiment_configs/
 """
 
 import yaml
-import os
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Union
@@ -42,8 +41,8 @@ class NoPropConfig:
     log_interval: int = 100
     save_best: bool = True
     save_final: bool = True
-    best_model_path: str = "best_model.pt"
-    final_model_path: str = "final_model.pt"
+    best_model_path: str = "checkpoints/best_model.pt"
+    final_model_path: str = "checkpoints/final_model.pt"
     
     # Reproducibility
     seed: int = 42

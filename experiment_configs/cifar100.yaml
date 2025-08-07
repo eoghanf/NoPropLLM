@@ -28,8 +28,8 @@ embed_lr_multiplier: 0.1
 log_interval: 100
 save_best: true
 save_final: true
-best_model_path: "best_cifar100_noprop_model.pt"
-final_model_path: "final_cifar100_noprop_model.pt"
+best_model_path: "checkpoints/best_cifar100_noprop_model.pt"
+final_model_path: "checkpoints/final_cifar100_noprop_model.pt"
 
 # Reproducibility
 seed: 42

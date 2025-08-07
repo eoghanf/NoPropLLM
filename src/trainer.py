@@ -7,12 +7,11 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from typing import Dict, Tuple, Optional
-import time
 
 from .models import NoPropNetwork
 from .config import NoPropConfig
 from .dataloaders import get_dataset_info
-from .utils import Timer, AverageMeter, save_checkpoint, print_model_info
+from .utils import Timer, AverageMeter, save_checkpoint as save_checkpoint_util, print_model_info
 
 
 class NoPropTrainer:
@@ -254,31 +253,22 @@ class NoPropTrainer:
     
     def save_checkpoint(self, filepath: str, is_best: bool = False):
         """Save training checkpoint."""
-        # Convert layer optimizers dict for saving
-        layer_optimizers = {}
-        for key, optimizer in self.optimizers.items():
-            if key.startswith('layer_'):
-                layer_idx = int(key.split('_')[1])
-                layer_optimizers[layer_idx] = optimizer.state_dict()
-            else:
-                layer_optimizers[key] = optimizer.state_dict()
+        # Ensure checkpoint directory exists
+        from pathlib import Path
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
         
         checkpoint_data = {
-            'epoch': self.current_epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizers': layer_optimizers,
-            'best_accuracy': self.best_accuracy,
             'training_history': self.training_history,
             'config': self.config,
             'dataset_info': self.dataset_info
         }
         
-        save_checkpoint(
-            self.model, 
-            {}, # optimizers handled above
-            self.current_epoch,
-            self.best_accuracy,
-            filepath,
+        save_checkpoint_util(
+            model=self.model, 
+            optimizers=self.optimizers,  # Pass actual optimizer objects
+            epoch=self.current_epoch,
+            best_accuracy=self.best_accuracy,
+            filepath=filepath,
             **checkpoint_data
         )
         
