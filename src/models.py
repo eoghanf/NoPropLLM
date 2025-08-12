@@ -16,8 +16,7 @@ class DenoisingModule(nn.Module):
         self,
         image_channels: int = 3,
         image_size: int = 32,
-        label_dim: int = 10,
-        hidden_dim: int = 256
+        label_dim: int = 10
     ):
         """
         Initialize a single denoising module.
@@ -25,15 +24,13 @@ class DenoisingModule(nn.Module):
         Args:
             image_channels: Number of input image channels (1 for MNIST, 3 for CIFAR)
             image_size: Size of input images (28 for MNIST, 32 for CIFAR)
-            label_dim: Dimension of label embeddings
-            hidden_dim: Hidden dimension size
+            label_dim: Dimension of label embeddings (same as number of classes)
         """
         super().__init__()
         
         self.image_channels = image_channels
         self.image_size = image_size
         self.label_dim = label_dim
-        self.hidden_dim = hidden_dim
         
         # Image processing pathway (left side of Figure 6)
         self.image_conv = nn.Sequential(
@@ -51,9 +48,9 @@ class DenoisingModule(nn.Module):
             img_features = self.image_conv(dummy_img).shape[1]
         
         self.image_fc = nn.Sequential(
-            nn.Linear(img_features, hidden_dim),
+            nn.Linear(img_features, label_dim),
             nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim)
+            nn.BatchNorm1d(label_dim)
         )
         
         # Noised label processing pathway
@@ -69,38 +66,37 @@ class DenoisingModule(nn.Module):
             )
             
             self.label_fc = nn.Sequential(
-                nn.Linear(img_features, hidden_dim),
+                nn.Linear(img_features, label_dim),
                 nn.ReLU(),
-                nn.BatchNorm1d(hidden_dim)
+                nn.BatchNorm1d(label_dim)
             )
         else:
             # Standard fully connected processing for label embeddings
             self.label_conv = None
             self.label_fc = nn.Sequential(
-                nn.Linear(label_dim, hidden_dim // 2),
+                nn.Linear(label_dim, label_dim // 2),
                 nn.ReLU(),
-                nn.BatchNorm1d(hidden_dim // 2),
-                nn.Linear(hidden_dim // 2, hidden_dim),
+                nn.BatchNorm1d(label_dim // 2),
+                nn.Linear(label_dim // 2, label_dim),
                 nn.ReLU(),
-                nn.BatchNorm1d(hidden_dim)
+                nn.BatchNorm1d(label_dim)
             )
         
         # Fused processing after concatenation
         self.fused_layers = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim * 2),  # Concatenated features
+            nn.Linear(label_dim * 2, label_dim * 2),  # Concatenated features
             nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim * 2),
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.BatchNorm1d(label_dim * 2),
+            nn.Linear(label_dim * 2, label_dim),
             nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
-            nn.Linear(hidden_dim, label_dim)  # Output logits
+            nn.BatchNorm1d(label_dim),
+            nn.Linear(label_dim, label_dim)  # Output logits
         )
         
     def forward(
         self, 
         image: torch.Tensor, 
-        noised_label: torch.Tensor,
-        return_logits: bool = False
+        noised_label: torch.Tensor
     ) -> torch.Tensor:
         """
         Forward pass of the denoising module.
@@ -108,10 +104,9 @@ class DenoisingModule(nn.Module):
         Args:
             image: Input image tensor of shape (batch_size, channels, height, width)
             noised_label: Noised label embedding of shape (batch_size, label_dim)
-            return_logits: If True, return raw logits instead of applying softmax
             
         Returns:
-            Model output (probability distribution over class embeddings or raw logits)
+            Model output logits of shape (batch_size, label_dim)
         """
         batch_size = image.shape[0]
         
@@ -135,11 +130,7 @@ class DenoisingModule(nn.Module):
         # Process through fused layers to get logits
         logits = self.fused_layers(fused_features)
         
-        if return_logits:
-            return logits
-        
-        # Apply softmax to get probability distribution over class embeddings
-        return F.softmax(logits, dim=1)
+        return logits
 
 
 class NoPropNetwork(nn.Module):
@@ -156,8 +147,9 @@ class NoPropNetwork(nn.Module):
         image_channels: int = 3,
         image_size: int = 32,
         label_dim: int = 10,
-        hidden_dim: int = 256,
-        embed_matrix: Optional[torch.Tensor] = None
+        noise_schedule_type: str = "cosine",
+        noise_schedule_min: float = 0.001,
+        noise_schedule_max: float = 0.999
     ):
         """
         Initialize the complete NoProp network.
@@ -166,69 +158,104 @@ class NoPropNetwork(nn.Module):
             num_layers: Number of denoising layers T (default 10 as mentioned in paper)
             image_channels: Number of input image channels
             image_size: Size of input images
-            label_dim: Dimension of label embeddings
-            hidden_dim: Hidden dimension for each denoising module
-            embed_matrix: Optional class embedding matrix W_Embed
+            label_dim: Dimension of label embeddings (same as number of classes)
+            noise_schedule_type: Type of noise schedule ("cosine" or "linear")
+            noise_schedule_min: Minimum noise level
+            noise_schedule_max: Maximum noise level
         """
         super().__init__()
         
         self.num_layers = num_layers
         self.label_dim = label_dim
+        self.noise_schedule_type = noise_schedule_type
+        self.noise_schedule_min = noise_schedule_min
+        self.noise_schedule_max = noise_schedule_max
         
         # Create T denoising modules (u_1, u_2, ..., u_T)
         self.denoising_modules = nn.ModuleList([
             DenoisingModule(
                 image_channels=image_channels,
                 image_size=image_size,
-                label_dim=label_dim,
-                hidden_dim=hidden_dim
+                label_dim=label_dim
             ) for _ in range(num_layers)
         ])
         
-        # Class embedding matrix W_Embed
-        if embed_matrix is not None:
-            self.register_buffer('embed_matrix', embed_matrix)
+        
+        # Final classification layer - identity function (z_T directly becomes prediction)
+        self.classifier = nn.Identity()
+        
+        # Noise schedule parameters
+        self.register_buffer('alphas', self._get_alpha_schedule(num_layers, noise_schedule_type))
+        self.register_buffer('noise_schedule', self._get_noise_schedule(num_layers, noise_schedule_type, noise_schedule_min, noise_schedule_max))
+        
+    def _get_alpha_schedule(self, T: int, schedule_type: str) -> torch.Tensor:
+        """Generate alpha schedule for inference denoising based on schedule type."""
+        if schedule_type == "cosine":
+            return self._cosine_alpha_schedule(T)
+        elif schedule_type == "linear":
+            return self._linear_alpha_schedule(T)
         else:
-            # Initialize as identity matrix (one-hot)
-            self.register_buffer('embed_matrix', torch.eye(label_dim))
-        
-        # Final classification layer p_θ_out(y|z_T)
-        self.classifier = nn.Linear(label_dim, label_dim)
-        
-        # Noise schedule parameters (cosine schedule)
-        self.register_buffer('alphas', self._cosine_schedule(num_layers))
-        
-    def _cosine_schedule(self, T: int) -> torch.Tensor:
-        """Generate cosine noise schedule as used in the paper."""
+            raise ValueError(f"Unknown noise schedule type: {schedule_type}. Use 'cosine' or 'linear'.")
+    
+    def _cosine_alpha_schedule(self, T: int) -> torch.Tensor:
+        """Generate cosine alpha schedule as used in the NoProp paper."""
         steps = torch.linspace(0, 1, T + 1)
         alphas_cumprod = torch.cos(((steps + 0.008) / 1.008) * torch.pi / 2) ** 2
         alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
         alphas = alphas_cumprod[1:] / alphas_cumprod[:-1]
         return torch.clamp(alphas, 0.0001, 0.9999)
     
+    def _linear_alpha_schedule(self, T: int) -> torch.Tensor:
+        """Generate linear alpha schedule for inference denoising."""
+        # Linear schedule for alphas: start high (close to 1) and decrease linearly
+        alphas = torch.linspace(0.9999, 0.0001, T)
+        return alphas
+    
+    def _get_noise_schedule(self, T: int, schedule_type: str, min_noise: float, max_noise: float) -> torch.Tensor:
+        """
+        Generate noise schedule for training.
+        
+        Args:
+            T: Number of layers
+            schedule_type: "cosine" or "linear"
+            min_noise: Minimum noise level (final layer)
+            max_noise: Maximum noise level (first layer)
+        """
+        if schedule_type == "cosine":
+            # Cosine schedule: starts at high noise, decreases to low noise
+            steps = torch.linspace(0, 1, T)
+            cosine_schedule = torch.cos(steps * torch.pi / 2) ** 2
+            # Rescale to desired range: [max_noise, min_noise]
+            noise_schedule = max_noise * cosine_schedule + min_noise * (1 - cosine_schedule)
+            return noise_schedule
+        elif schedule_type == "linear":
+            # Linear schedule: linearly decrease from max to min noise
+            return torch.linspace(max_noise, min_noise, T)
+        else:
+            raise ValueError(f"Unknown noise schedule type: {schedule_type}. Use 'cosine' or 'linear'.")
+    
     def get_noisy_label(self, y: torch.Tensor, layer_idx: int, noise: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Generate noisy label for specific layer with decreasing noise schedule.
-        Layer 0 has highest noise (0.9), last layer has lowest noise (0.01).
+        Generate noisy label for specific layer using cosine noise schedule.
+        Layer 0 has highest noise, last layer has lowest noise (cosine decay).
         """
         batch_size = y.shape[0]
         device = y.device
         
-        # Get label embeddings
+        # Convert class indices to one-hot embeddings
         if y.dtype == torch.long:
-            # Convert class indices to embeddings
-            clean_embed = self.embed_matrix[y]  # [batch, label_dim]
+            clean_embed = torch.zeros(batch_size, self.label_dim, device=device)
+            clean_embed.scatter_(1, y.unsqueeze(1), 1.0)  # One-hot encoding
         else:
             clean_embed = y
         
-        # Define decreasing noise schedule: 0.9, 0.8, 0.7, ..., 0.01
-        noise_levels = torch.linspace(0.9, 0.01, self.num_layers, device=device)
-        noise_level = noise_levels[layer_idx]
+        # Get noise level from cosine schedule
+        noise_level = self.noise_schedule[layer_idx]
         
         if noise is None:
             noise = torch.randn_like(clean_embed)
         
-        # Apply layer-specific noise: z_layer = (1 - noise_level) * clean + noise_level * noise
+        # Apply layer-specific noise: z_layer = sqrt(1 - noise_level) * clean + sqrt(noise_level) * noise
         noisy_label = torch.sqrt(1 - noise_level) * clean_embed + torch.sqrt(noise_level) * noise
         
         return noisy_label
@@ -247,20 +274,20 @@ class NoPropNetwork(nn.Module):
         
         # Progressive denoising through T modules
         for t, module in enumerate(self.denoising_modules):
-            # Each module predicts probability distribution over class embeddings
-            probs = module(image, z, return_logits=False)  # [batch, label_dim]
+            # Each module predicts logits over classes
+            logits = module(image, z)  # [batch, label_dim]
             
-            # Compute weighted sum of class embeddings (predicted u_y)
-            predicted_embed = probs @ self.embed_matrix  # [batch, label_dim]
+            # Convert to probabilities (predicted clean labels)
+            predicted_probs = torch.softmax(logits, dim=1)  # [batch, label_dim]
             
             # Update z using residual connection with noise (Equation 3)
             if t < len(self.denoising_modules) - 1:
                 alpha_t = self.alphas[t]
                 # Simplified residual update
-                z = torch.sqrt(alpha_t) * predicted_embed + torch.sqrt(1 - alpha_t) * z
+                z = torch.sqrt(alpha_t) * predicted_probs + torch.sqrt(1 - alpha_t) * z
         
-        # Final classification
-        logits = self.classifier(z)
+        # Final classification (identity - z_T directly becomes prediction)
+        logits = self.classifier(z)  # Identity function: returns z unchanged
         return F.log_softmax(logits, dim=1)
     
     def forward_training(self, image: torch.Tensor, y: torch.Tensor, layer_idx: int) -> torch.Tensor:
@@ -273,7 +300,7 @@ class NoPropNetwork(nn.Module):
         noisy_label = self.get_noisy_label(y, layer_idx)
         
         # Get prediction from denoising module at this layer (clean image + noisy label)
-        prediction = self.denoising_modules[layer_idx](image, noisy_label, return_logits=True)
+        prediction = self.denoising_modules[layer_idx](image, noisy_label)
         
         return prediction
     
@@ -282,63 +309,41 @@ class NoPropNetwork(nn.Module):
         Compute NoProp loss for specific layer.
         Each layer gets clean image x but layer-specific noisy labels to denoise.
         """
-        # Get target embeddings (clean labels)
+        # Get target one-hot embeddings (clean labels)
+        batch_size = y.shape[0]
+        device = y.device
+        
         if y.dtype == torch.long:
-            target_embed = self.embed_matrix[y]
+            target_embed = torch.zeros(batch_size, self.label_dim, device=device)
+            target_embed.scatter_(1, y.unsqueeze(1), 1.0)  # One-hot encoding
         else:
             target_embed = y
         
         # Get prediction from module at this layer (using clean image + noisy labels)
         prediction = self.forward_training(image, y, layer_idx)
         
-        # Convert logits to weighted embedding prediction
-        probs = F.softmax(prediction, dim=1)
-        predicted_embed = probs @ self.embed_matrix
+        # Convert logits to probabilities (predicted clean labels)
+        predicted_probs = F.softmax(prediction, dim=1)
         
-        # L2 loss between predicted and target embeddings (clean labels)
-        mse_loss = F.mse_loss(predicted_embed, target_embed)
+        # L2 loss between predicted probabilities and target one-hot
+        cross_entropy_loss = F.cross_entropy(predicted_probs, target_embed)
         
-        # Layer-specific weighting based on noise schedule
-        noise_levels = torch.linspace(0.9, 0.01, self.num_layers, device=image.device)
-        noise_level = noise_levels[layer_idx]
+        # Layer-specific weighting based on cosine noise schedule
+        noise_level = self.noise_schedule[layer_idx]
         
         # Higher noise levels get higher weights (harder denoising task)
         weight = noise_level.clamp(min=0.01)
         
-        return weight * mse_loss
+        return cross_entropy_loss
     
     def compute_classifier_loss(self, image: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
-        Compute classifier loss E[−log p̂_θout(y|z_T)] from Equation 8.
-        This trains the final classifier to predict labels from the final layer output.
+        Compute classifier loss. With identity classifier, this is equivalent to the final layer's denoising loss.
+        The final denoising layer output directly becomes the classification prediction.
         """
-        # Run inference to get z_T (final layer output)
-        batch_size = image.shape[0]
-        device = image.device
-        
-        # Start with z_0 (Gaussian noise) and run through all layers to get z_T
-        z = torch.randn(batch_size, self.label_dim, device=device)
-        
-        # Progressive denoising through T modules to get final z_T
-        with torch.no_grad():  # Don't backprop through the denoising process
-            for t, module in enumerate(self.denoising_modules):
-                probs = module(image, z, return_logits=False)
-                predicted_embed = probs @ self.embed_matrix
-                
-                if t < len(self.denoising_modules) - 1:
-                    alpha_t = self.alphas[t]
-                    z = torch.sqrt(alpha_t) * predicted_embed + torch.sqrt(1 - alpha_t) * z
-                else:
-                    z = predicted_embed  # Final z_T
-        
-        # Classify final z_T
-        logits = self.classifier(z)
-        log_probs = F.log_softmax(logits, dim=1)
-        
-        # Cross-entropy loss: -log p̂_θout(y|z_T)
-        classifier_loss = F.nll_loss(log_probs, y)
-        
-        return classifier_loss
+        # With identity classifier, classification loss = final layer denoising loss
+        final_layer_idx = self.num_layers - 1
+        return self.compute_loss(image, y, final_layer_idx)
     
     def forward(self, image: torch.Tensor, y: Optional[torch.Tensor] = None, 
                 mode: str = 'inference') -> torch.Tensor:
@@ -371,8 +376,7 @@ if __name__ == "__main__":
     denoising_module = DenoisingModule(
         image_channels=3,
         image_size=32,
-        label_dim=10,
-        hidden_dim=256
+        label_dim=10
     )
     
     batch_size = 4
@@ -381,7 +385,7 @@ if __name__ == "__main__":
     
     output = denoising_module(image, noised_label)
     print(f"DenoisingModule output shape: {output.shape}")
-    print(f"Output sum (should be ~1): {output.sum(dim=1)}")
+    print(f"Output (logits): {output[0][:3]} ...")  # Show first 3 logits of first sample
     
     # Test complete NoProp network
     print("\n=== Testing NoPropNetwork (10 layers) ===")
@@ -390,7 +394,7 @@ if __name__ == "__main__":
         image_channels=3,
         image_size=32,
         label_dim=10,
-        hidden_dim=256
+        noise_schedule_type="cosine"
     )
     
     # Test inference
@@ -417,7 +421,7 @@ if __name__ == "__main__":
         image_channels=1,
         image_size=28,
         label_dim=10,
-        hidden_dim=256
+        noise_schedule_type="cosine"
     )
     
     mnist_image = torch.randn(batch_size, 1, 28, 28)

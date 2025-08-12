@@ -1,0 +1,45 @@
+# CIFAR-10 Backpropagation Training Configuration
+
+# Dataset settings
+dataset: "cifar10"
+batch_size: 128
+data_path: "./data" 
+num_workers: 4
+augment: false  # Data augmentation for training set
+
+# Model architecture
+num_layers: 10
+
+# Training parameters
+training: "backpropagation"
+epochs: 150  # More epochs needed for CIFAR
+learning_rate: 0.001
+weight_decay: 0.01
+
+# NoProp specific parameters  
+timesteps: 10
+eta: 0.1
+
+# Noise schedule parameters
+noise_schedule_type: "cosine"  # "cosine" or "linear"
+noise_schedule_min: 0.001     # Minimum noise level
+noise_schedule_max: 0.999     # Maximum noise level
+
+# Optimization settings
+grad_clip_max_norm: 1.0
+
+# Logging and saving
+log_interval: 100
+save_best: true
+save_final: true
+detailed_logging: true  # Enable batch-level logging
+validation_batches_per_log: 5  # Number of validation batches to use for quick validation
+best_model_path: "checkpoints/best_cifar10_backprop_model.pt"
+final_model_path: "checkpoints/final_cifar10_backprop_model.pt"
+
+# Reproducibility
+seed: 42
+
+# Early stopping
+early_stopping: false
+early_stopping_accuracy: 95.0

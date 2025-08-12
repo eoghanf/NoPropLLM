@@ -12,11 +12,12 @@ from .models import NoPropNetwork
 from .config import NoPropConfig
 from .dataloaders import get_dataset_info
 from .utils import Timer, AverageMeter, save_checkpoint as save_checkpoint_util, print_model_info
+from .logger import TrainingLogger, BatchTimer
 
 
 class NoPropTrainer:
     """
-    NoProp trainer that handles the complete training pipeline.
+    Unified trainer that handles both diffusion (NoProp) and backpropagation training.
     """
     
     def __init__(self, config: NoPropConfig):
@@ -28,6 +29,7 @@ class NoPropTrainer:
         """
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.training_mode = getattr(config, 'training', 'diffusion')  # Default to diffusion for backward compatibility
         
         # Get dataset information
         self.dataset_info = get_dataset_info(config.dataset)
@@ -35,8 +37,11 @@ class NoPropTrainer:
         # Initialize model
         self.model = self._create_model()
         
-        # Initialize optimizers
-        self.optimizers = self._create_optimizers()
+        # Initialize optimizers based on training mode
+        if self.training_mode == 'diffusion':
+            self.optimizers = self._create_diffusion_optimizers()
+        else:
+            self.optimizer = self._create_backprop_optimizer()
         
         # Training state
         self.current_epoch = 0
@@ -45,6 +50,15 @@ class NoPropTrainer:
         
         # Timers
         self.epoch_timer = Timer()
+        self.batch_timer = BatchTimer()
+        
+        # Initialize logger
+        experiment_name = f"{config.dataset}_{self.training_mode}"
+        self.logger = TrainingLogger(
+            experiment_name=experiment_name,
+            log_dir="training_logs",
+            config=vars(config) if hasattr(config, '__dict__') else config._asdict() if hasattr(config, '_asdict') else {}
+        )
         
     def _create_model(self) -> NoPropNetwork:
         """Create and initialize the NoProp model."""
@@ -53,13 +67,15 @@ class NoPropTrainer:
             image_channels=self.dataset_info['image_channels'],
             image_size=self.dataset_info['image_size'],
             label_dim=self.dataset_info['num_classes'],
-            hidden_dim=self.config.hidden_dim
+            noise_schedule_type=self.config.noise_schedule_type,
+            noise_schedule_min=self.config.noise_schedule_min,
+            noise_schedule_max=self.config.noise_schedule_max
         ).to(self.device)
         
         return model
     
-    def _create_optimizers(self) -> Dict:
-        """Create optimizers for each component."""
+    def _create_diffusion_optimizers(self) -> Dict:
+        """Create optimizers for each denoising layer (classifier is identity - no parameters)."""
         optimizers = {}
         
         # Create separate optimizers for each denoising module
@@ -71,31 +87,45 @@ class NoPropTrainer:
             )
             optimizers[f'layer_{layer_idx}'] = optimizer
         
-        # Optimizer for final classifier and embedding matrix
-        final_optimizer = optim.AdamW([
-            {'params': self.model.classifier.parameters()},
-            {'params': self.model.embed_matrix, 'lr': self.config.learning_rate * self.config.embed_lr_multiplier}
-        ], lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
-        
-        optimizers['final'] = final_optimizer
+        # No optimizer needed for final classifier (identity function has no parameters)
         
         return optimizers
     
-    def train_epoch(self, train_loader: DataLoader, epoch: int) -> float:
+    def _create_backprop_optimizer(self):
+        """Create standard backpropagation optimizer."""
+        optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay
+        )
+        return optimizer
+    
+    def train_epoch(self, train_loader: DataLoader, test_loader: DataLoader, epoch: int) -> float:
         """
-        Train the model for one epoch.
+        Train the model for one epoch using either diffusion or backpropagation.
         
         Args:
             train_loader: Training data loader
+            test_loader: Test data loader (for batch-level validation)
             epoch: Current epoch number
             
         Returns:
             Average training loss for the epoch
         """
+        if self.training_mode == 'diffusion':
+            return self._train_epoch_diffusion(train_loader, test_loader, epoch)
+        else:
+            return self._train_epoch_backprop(train_loader, test_loader, epoch)
+    
+    def _train_epoch_diffusion(self, train_loader: DataLoader, test_loader: DataLoader, epoch: int) -> float:
+        """Train the model for one epoch using diffusion (NoProp) training."""
         self.model.train()
         loss_meter = AverageMeter()
         
         for batch_idx, (data, target) in enumerate(train_loader):
+            # Start batch timer
+            self.batch_timer.start()
+            
             data, target = data.to(self.device, non_blocking=True), target.to(self.device, non_blocking=True)
             
             batch_loss = 0.0
@@ -122,43 +152,100 @@ class NoPropTrainer:
                 self.optimizers[f'layer_{layer_idx}'].step()
                 batch_loss += loss_layer.item()
             
-            # Train final classifier every batch (as per Equation 8)
-            self.optimizers['final'].zero_grad()
-            
-            # Compute classifier loss E[−log p̂_θout(y|z_T)]
-            classifier_loss = self.model.compute_classifier_loss(data, target)
-            
-            if not torch.isnan(classifier_loss):
-                classifier_loss.backward()
-                
-                # Gradient clipping for classifier
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.classifier.parameters(), 
-                    max_norm=self.config.grad_clip_max_norm
-                )
-                torch.nn.utils.clip_grad_norm_(
-                    [self.model.embed_matrix], 
-                    max_norm=self.config.grad_clip_max_norm
-                )
-                
-                self.optimizers['final'].step()
-                batch_loss += classifier_loss.item()
+            # No separate classifier training needed (identity function has no parameters)
+            # The final denoising layer serves as the classifier
             
             loss_meter.update(batch_loss, data.size(0))
             
-            # Log training progress
+            # Stop batch timer and compute validation metrics
+            batch_time = self.batch_timer.stop()
+            val_batches = getattr(self.config, 'validation_batches_per_log', 5)
+            val_loss, val_accuracy = self._validate_batch_subset(test_loader, max_batches=val_batches)
+            
+            # Log metrics after every batch
+            self.logger.log_batch_metrics(
+                epoch=epoch,
+                batch_idx=batch_idx,
+                train_loss=batch_loss,
+                val_loss=val_loss,
+                val_accuracy=val_accuracy,
+                learning_rate=self._get_current_lr(),
+                batch_size=data.size(0),
+                batch_time=batch_time
+            )
+            
+            # Log training progress to console
             if batch_idx % self.config.log_interval == 0:
                 print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} '
-                      f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {batch_loss:.6f}')
+                      f'({100. * batch_idx / len(train_loader):.0f}%)]\t'
+                      f'Loss: {batch_loss:.6f}\tVal Acc: {val_accuracy:.2f}%')
         
         return loss_meter.avg
     
-    def validate(self, test_loader: DataLoader) -> Tuple[float, float]:
+    def _train_epoch_backprop(self, train_loader: DataLoader, test_loader: DataLoader, epoch: int) -> float:
+        """Train the model for one epoch using standard backpropagation."""
+        self.model.train()
+        loss_meter = AverageMeter()
+        
+        for batch_idx, (data, target) in enumerate(train_loader):
+            # Start batch timer
+            self.batch_timer.start()
+            
+            data, target = data.to(self.device, non_blocking=True), target.to(self.device, non_blocking=True)
+            
+            self.optimizer.zero_grad()
+            
+            # Forward pass through the model for inference
+            output = self.model(data, mode='inference')
+            
+            # Compute cross-entropy loss
+            loss = F.nll_loss(output, target)
+            
+            # Backward pass
+            loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm=self.config.grad_clip_max_norm
+            )
+            
+            self.optimizer.step()
+            
+            loss_meter.update(loss.item(), data.size(0))
+            
+            # Stop batch timer and compute validation metrics
+            batch_time = self.batch_timer.stop()
+            val_batches = getattr(self.config, 'validation_batches_per_log', 5)
+            val_loss, val_accuracy = self._validate_batch_subset(test_loader, max_batches=val_batches)
+            
+            # Log metrics after every batch
+            self.logger.log_batch_metrics(
+                epoch=epoch,
+                batch_idx=batch_idx,
+                train_loss=loss.item(),
+                val_loss=val_loss,
+                val_accuracy=val_accuracy,
+                learning_rate=self._get_current_lr(),
+                batch_size=data.size(0),
+                batch_time=batch_time
+            )
+            
+            # Log training progress to console
+            if batch_idx % self.config.log_interval == 0:
+                print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} '
+                      f'({100. * batch_idx / len(train_loader):.0f}%)]\t'
+                      f'Loss: {loss.item():.6f}\tVal Acc: {val_accuracy:.2f}%')
+        
+        return loss_meter.avg
+    
+    def _validate_batch_subset(self, test_loader: DataLoader, max_batches: int = 5) -> Tuple[float, float]:
         """
-        Validate the model and return loss and accuracy.
+        Quick validation on a subset of validation data for frequent logging.
         
         Args:
             test_loader: Test data loader
+            max_batches: Maximum number of batches to evaluate (for speed)
             
         Returns:
             Tuple of (test_loss, accuracy)
@@ -167,6 +254,60 @@ class NoPropTrainer:
         test_loss = 0.0
         correct = 0
         total = 0
+        
+        with torch.no_grad():
+            for batch_idx, (data, target) in enumerate(test_loader):
+                if batch_idx >= max_batches:
+                    break
+                    
+                data, target = data.to(self.device, non_blocking=True), target.to(self.device, non_blocking=True)
+                
+                # Forward pass through inference pipeline
+                log_probs = self.model(data, mode='inference')
+                
+                # Compute cross-entropy loss
+                loss = F.nll_loss(log_probs, target, reduction='sum')
+                test_loss += loss.item()
+                
+                # Get predictions
+                pred = log_probs.argmax(dim=1, keepdim=True)
+                correct += pred.eq(target.view_as(pred)).sum().item()
+                total += target.size(0)
+        
+        test_loss /= total
+        accuracy = 100. * correct / total
+        
+        # Return to training mode
+        self.model.train()
+        
+        return test_loss, accuracy
+    
+    def _get_current_lr(self) -> float:
+        """Get current learning rate from optimizer(s)."""
+        if self.training_mode == 'diffusion':
+            # Get LR from the first layer optimizer (they should all be the same)
+            return self.optimizers['layer_0'].param_groups[0]['lr']
+        else:
+            return self.optimizer.param_groups[0]['lr']
+    
+    def validate(self, test_loader: DataLoader, train_loader: DataLoader = None) -> Tuple[float, float, float, float]:
+        """
+        Validate the model and return loss and accuracy for both validation and training sets.
+        
+        Args:
+            test_loader: Test/validation data loader
+            train_loader: Training data loader (optional)
+            
+        Returns:
+            Tuple of (test_loss, test_accuracy, train_loss, train_accuracy)
+            If train_loader is None, train_loss and train_accuracy will be None
+        """
+        self.model.eval()
+        
+        # Compute validation metrics
+        test_loss = 0.0
+        test_correct = 0
+        test_total = 0
         
         with torch.no_grad():
             for data, target in test_loader:
@@ -181,13 +322,41 @@ class NoPropTrainer:
                 
                 # Get predictions
                 pred = log_probs.argmax(dim=1, keepdim=True)
-                correct += pred.eq(target.view_as(pred)).sum().item()
-                total += target.size(0)
+                test_correct += pred.eq(target.view_as(pred)).sum().item()
+                test_total += target.size(0)
         
         test_loss /= len(test_loader.dataset)
-        accuracy = 100. * correct / total
+        test_accuracy = 100. * test_correct / test_total
         
-        return test_loss, accuracy
+        # Compute training metrics if train_loader is provided
+        train_loss = None
+        train_accuracy = None
+        
+        if train_loader is not None:
+            train_loss = 0.0
+            train_correct = 0
+            train_total = 0
+            
+            with torch.no_grad():
+                for data, target in train_loader:
+                    data, target = data.to(self.device, non_blocking=True), target.to(self.device, non_blocking=True)
+                    
+                    # Forward pass through inference pipeline
+                    log_probs = self.model(data, mode='inference')  # Returns log probabilities
+                    
+                    # Compute cross-entropy loss
+                    loss = F.nll_loss(log_probs, target, reduction='sum')
+                    train_loss += loss.item()
+                    
+                    # Get predictions
+                    pred = log_probs.argmax(dim=1, keepdim=True)
+                    train_correct += pred.eq(target.view_as(pred)).sum().item()
+                    train_total += target.size(0)
+            
+            train_loss /= len(train_loader.dataset)
+            train_accuracy = 100. * train_correct / train_total
+        
+        return test_loss, test_accuracy, train_loss, train_accuracy
     
     def train(self, train_loader: DataLoader, test_loader: DataLoader):
         """
@@ -201,51 +370,63 @@ class NoPropTrainer:
         print("=" * 80)
         
         # Initial validation
-        test_loss, accuracy = self.validate(test_loader)
-        print(f"Before training, model test loss is {test_loss} and accuracy is {accuracy:.2f}%")
+        test_loss, test_accuracy, train_loss, train_accuracy = self.validate(test_loader, train_loader)
+        print(f"Before training:")
+        print(f"  Test loss: {test_loss:.4f}, Test accuracy: {test_accuracy:.2f}%")
+        if train_loss is not None and train_accuracy is not None:
+            print(f"  Train loss: {train_loss:.4f}, Train accuracy: {train_accuracy:.2f}%")
         
         for epoch in range(1, self.config.epochs + 1):
             self.current_epoch = epoch
             self.epoch_timer.start()
             
             # Train for one epoch
-            avg_train_loss = self.train_epoch(train_loader, epoch)
+            avg_train_loss = self.train_epoch(train_loader, test_loader, epoch)
             
             # Validate
-            test_loss, accuracy = self.validate(test_loader)
+            test_loss, test_accuracy, train_loss, train_accuracy = self.validate(test_loader, train_loader)
             
             # Track best accuracy and save model
-            if accuracy > self.best_accuracy:
-                self.best_accuracy = accuracy
+            if test_accuracy > self.best_accuracy:
+                self.best_accuracy = test_accuracy
                 if self.config.save_best:
                     self.save_checkpoint(self.config.best_model_path, is_best=True)
             
             epoch_time = self.epoch_timer.stop()
             
+            # Log epoch end to the logger
+            self.logger.log_epoch_end(epoch)
+            
             # Log results
-            print(f'Epoch {epoch:3d}/{self.config.epochs} | '
-                  f'Train Loss: {avg_train_loss:.4f} | '
-                  f'Test Loss: {test_loss:.4f} | '
-                  f'Accuracy: {accuracy:.2f}% | '
-                  f'Time: {epoch_time:.1f}s')
+            print(f'Epoch {epoch:3d}/{self.config.epochs} | Time: {epoch_time:.1f}s')
+            print(f'  Training Loss: {train_loss:.4f} | Training Accuracy: {train_accuracy:.2f}%' if train_loss is not None else f'  Training Loss: {avg_train_loss:.4f}')
+            print(f'  Validation Loss: {test_loss:.4f} | Validation Accuracy: {test_accuracy:.2f}%')
             
             # Store history
-            self.training_history.append({
+            history_entry = {
                 'epoch': epoch,
                 'train_loss': avg_train_loss,
                 'test_loss': test_loss,
-                'accuracy': accuracy,
+                'test_accuracy': test_accuracy,
                 'time': epoch_time
-            })
+            }
+            if train_loss is not None and train_accuracy is not None:
+                history_entry['train_loss_inference'] = train_loss
+                history_entry['train_accuracy'] = train_accuracy
+            
+            self.training_history.append(history_entry)
             
             # Early stopping if accuracy is very high
-            if self.config.early_stopping and accuracy >= self.config.early_stopping_accuracy:
-                print(f"Early stopping at epoch {epoch} with accuracy {accuracy:.2f}%")
+            if self.config.early_stopping and test_accuracy >= self.config.early_stopping_accuracy:
+                print(f"Early stopping at epoch {epoch} with accuracy {test_accuracy:.2f}%")
                 break
         
         print("=" * 80)
         print(f"Training completed!")
         print(f"Best validation accuracy: {self.best_accuracy:.2f}%")
+        
+        # Finalize logging
+        self.logger.finalize()
         
         # Save final model
         if self.config.save_final:
@@ -263,9 +444,14 @@ class NoPropTrainer:
             'dataset_info': self.dataset_info
         }
         
+        if self.training_mode == 'diffusion':
+            optimizers = self.optimizers
+        else:
+            optimizers = {'main': self.optimizer}
+        
         save_checkpoint_util(
             model=self.model, 
-            optimizers=self.optimizers,  # Pass actual optimizer objects
+            optimizers=optimizers,
             epoch=self.current_epoch,
             best_accuracy=self.best_accuracy,
             filepath=filepath,
@@ -284,16 +470,21 @@ class NoPropTrainer:
         
         # Load optimizer states
         if 'optimizers' in checkpoint:
-            for key, state in checkpoint['optimizers'].items():
-                if isinstance(key, int):
-                    # Old format - layer index
-                    optimizer_key = f'layer_{key}'
-                    if optimizer_key in self.optimizers:
-                        self.optimizers[optimizer_key].load_state_dict(state)
-                else:
-                    # New format - string key
-                    if key in self.optimizers:
-                        self.optimizers[key].load_state_dict(state)
+            if self.training_mode == 'diffusion':
+                for key, state in checkpoint['optimizers'].items():
+                    if isinstance(key, int):
+                        # Old format - layer index
+                        optimizer_key = f'layer_{key}'
+                        if optimizer_key in self.optimizers:
+                            self.optimizers[optimizer_key].load_state_dict(state)
+                    else:
+                        # New format - string key
+                        if key in self.optimizers:
+                            self.optimizers[key].load_state_dict(state)
+            else:
+                # Backpropagation mode
+                if 'main' in checkpoint['optimizers']:
+                    self.optimizer.load_state_dict(checkpoint['optimizers']['main'])
         
         # Load training state
         self.current_epoch = checkpoint.get('epoch', 0)
@@ -307,7 +498,11 @@ class NoPropTrainer:
     def print_info(self):
         """Print trainer information."""
         print(f"Dataset: {self.config.dataset.upper()}")
-        print(f"Model: NoProp with {self.config.num_layers} layers")
+        print(f"Training mode: {self.training_mode.upper()}")
+        if self.training_mode == 'diffusion':
+            print(f"Model: NoProp with {self.config.num_layers} layers")
+        else:
+            print(f"Model: Standard neural network with {self.config.num_layers} layers")
         print_model_info(self.model)
         print(f"Device: {self.device}")
         

@@ -1,0 +1,44 @@
+# MNIST NoProp Training Configuration
+
+# Dataset settings
+dataset: "mnist"
+batch_size: 128
+data_path: "./data"
+num_workers: 4
+
+# Model architecture  
+num_layers: 10
+
+# Training parameters
+training: "diffusion"
+epochs: 100
+learning_rate: 0.001
+weight_decay: 0.001
+
+# NoProp specific parameters
+timesteps: 10  # Same as num_layers typically
+eta: 0.1       # η hyperparameter from paper (currently unused)
+
+# Noise schedule parameters
+noise_schedule_type: "cosine"  # "cosine" or "linear"
+noise_schedule_min: 0.001     # Minimum noise level
+noise_schedule_max: 0.999     # Maximum noise level
+
+# Optimization settings
+grad_clip_max_norm: 1.0
+
+# Logging and saving
+log_interval: 100
+save_best: false
+save_final: false
+detailed_logging: false  # Enable batch-level logging
+validation_batches_per_log: 3  # Number of validation batches to use for quick validation (smaller for MNIST)
+best_model_path: "checkpoints/best_mnist_noprop_model.pt"
+final_model_path: "checkpoints/final_mnist_noprop_model.pt"
+
+# Reproducibility
+seed: 42
+
+# Early stopping (optional)
+early_stopping: true
+early_stopping_accuracy: 99.3

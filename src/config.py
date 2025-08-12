@@ -22,9 +22,9 @@ class NoPropConfig:
     
     # Model architecture
     num_layers: int = 10
-    hidden_dim: int = 256
     
     # Training parameters
+    training: str = "diffusion"  # "diffusion" or "backpropagation"
     epochs: int = 100
     learning_rate: float = 0.001
     weight_decay: float = 0.001
@@ -33,14 +33,20 @@ class NoPropConfig:
     timesteps: int = 10
     eta: float = 0.1
     
+    # Noise schedule parameters
+    noise_schedule_type: str = "cosine"  # "cosine" or "linear"
+    noise_schedule_min: float = 0.001  # Minimum noise level
+    noise_schedule_max: float = 0.999  # Maximum noise level
+    
     # Optimization settings
     grad_clip_max_norm: float = 1.0
-    embed_lr_multiplier: float = 0.1
     
     # Logging and saving
     log_interval: int = 100
     save_best: bool = True
     save_final: bool = True
+    detailed_logging: bool = True
+    validation_batches_per_log: int = 5
     best_model_path: str = "checkpoints/best_model.pt"
     final_model_path: str = "checkpoints/final_model.pt"
     
