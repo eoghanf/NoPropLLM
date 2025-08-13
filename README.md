@@ -9,8 +9,9 @@ The method trains each layer in a network which jointly denoises images and labe
 ### 1. Install Dependencies
 
 ```bash
+conda create -n NoProp python=3.11 pip
 conda activate NoProp
-pip install torch torchvision pyyaml pytest
+pip install -r requirements.txt
 ```
 
 ### 2. Train on MNIST, CIFAR10 or CIFAR100
