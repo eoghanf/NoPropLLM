@@ -3,9 +3,10 @@
 Clean MNIST training script using YAML configuration.
 
 Usage:
-    python train_mnist.py                          # Use default experiment_configs/mnist.yaml
+    python train_mnist.py                          # Use default diffusion method
     python train_mnist.py --config my_config.yaml # Use custom config file
     python train_mnist.py --epochs 50             # Override specific parameters
+    python train_mnist.py --method backpropagation # Use backpropagation instead of diffusion
 """
 
 import argparse
@@ -13,19 +14,18 @@ from pathlib import Path
 
 from src import (
     NoPropTrainer,
-    load_config,
     load_dataset,
     set_seed,
     print_device_info,
-    print_training_header,
-    list_available_configs
 )
+from src.config import load_config, list_available_configs
+from src.utils import print_training_header
 
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Train NoProp model on MNIST dataset",
+        description="Train model on MNIST dataset",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -34,7 +34,16 @@ def parse_args():
         '--config', 
         type=str, 
         default=None,
-        help="Path to YAML configuration file (default: experiment_configs/mnist.yaml)"
+        help="Path to YAML configuration file (default: auto-selected based on method)"
+    )
+    
+    # Method selection
+    parser.add_argument(
+        '--method',
+        type=str,
+        choices=['diffusion', 'backpropagation'],
+        default='diffusion',
+        help="Training method to use (default: diffusion)"
     )
     
     # Override parameters
@@ -43,8 +52,8 @@ def parse_args():
     parser.add_argument('--learning_rate', type=float, help="Learning rate")
     parser.add_argument('--weight_decay', type=float, help="Weight decay")
     parser.add_argument('--num_layers', type=int, help="Number of denoising layers")
-    parser.add_argument('--hidden_dim', type=int, help="Hidden dimension size")
     parser.add_argument('--seed', type=int, help="Random seed")
+    parser.add_argument('--log_interval', type=int, help="Log interval for training progress")
     
     # Utility options
     parser.add_argument(
@@ -77,13 +86,19 @@ def main():
         print(f"Loading configuration from: {args.config}")
         config = load_config(config_path=args.config)
     else:
-        print("Using default MNIST configuration")
-        config = load_config(dataset='mnist')
+        # Auto-select default config based on method
+        if args.method == 'diffusion':
+            print("Using default MNIST diffusion configuration")
+            config_path = Path("experiment_configs/mnistdiffusion.yaml")
+        else:
+            print("Using default MNIST backpropagation configuration")
+            config_path = Path("experiment_configs/mnistbackpropagation.yaml")
+        config = load_config(config_path=config_path)
     
     # Override configuration parameters from command line
     overrides = {}
     for key, value in vars(args).items():
-        if value is not None and key not in ['config', 'list_configs']:
+        if value is not None and key not in ['config', 'list_configs', 'method']:
             overrides[key] = value
     
     if overrides:
@@ -103,8 +118,7 @@ def main():
         config.dataset,
         batch_size=config.batch_size,
         data_path=config.data_path,
-        num_workers=config.num_workers,
-        augment=getattr(config, 'augment', False)
+        num_workers=config.num_workers
     )
     print(f"Training samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")

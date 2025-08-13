@@ -33,64 +33,47 @@ class DenoisingModule(nn.Module):
         self.label_dim = label_dim
         
         # Image processing pathway (left side of Figure 6)
+        # Calculate flattened size after conv layers: image_size -> /2 -> /2 = image_size/4
+        conv_output_size = (image_size // 4) ** 2 * 64  # 64 channels from final conv layer
+        
         self.image_conv = nn.Sequential(
             nn.Conv2d(image_channels, 32, 3, padding=1),
             nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2,2)),
+            nn.Dropout(p=0.2),
             nn.Conv2d(32, 64, 3, padding=1),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten()
+            nn.MaxPool2d(kernel_size=(2,2)),
+            nn.Dropout(0.2),
+            nn.Flatten(),
+            nn.Linear(in_features=conv_output_size, out_features=256),
+            nn.BatchNorm1d(256)
         )
-        
-        # Calculate flattened image feature size
-        with torch.no_grad():
-            dummy_img = torch.zeros(1, image_channels, image_size, image_size)
-            img_features = self.image_conv(dummy_img).shape[1]
-        
-        self.image_fc = nn.Sequential(
-            nn.Linear(img_features, label_dim),
-            nn.ReLU(),
-            nn.BatchNorm1d(label_dim)
+
+        self.noised_label_b1= nn.Sequential(
+            nn.Linear(label_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU()
         )
-        
-        # Noised label processing pathway
-        if label_dim == image_size * image_size * image_channels:
-            # When embedding dimension matches image dimension, treat as image
-            self.label_conv = nn.Sequential(
-                nn.Conv2d(image_channels, 32, 3, padding=1),
-                nn.ReLU(),
-                nn.Conv2d(32, 64, 3, padding=1),
-                nn.ReLU(),
-                nn.AdaptiveAvgPool2d(1),
-                nn.Flatten()
-            )
-            
-            self.label_fc = nn.Sequential(
-                nn.Linear(img_features, label_dim),
-                nn.ReLU(),
-                nn.BatchNorm1d(label_dim)
-            )
-        else:
-            # Standard fully connected processing for label embeddings
-            self.label_conv = None
-            self.label_fc = nn.Sequential(
-                nn.Linear(label_dim, label_dim // 2),
-                nn.ReLU(),
-                nn.BatchNorm1d(label_dim // 2),
-                nn.Linear(label_dim // 2, label_dim),
-                nn.ReLU(),
-                nn.BatchNorm1d(label_dim)
-            )
-        
+
+        self.noised_label_b2 = nn.Sequential(
+            nn.Linear(in_features=256,
+                      out_features=256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(256),
+            nn.Linear(in_features=256,
+                      out_features=256),
+            nn.BatchNorm1d(256)
+        )
         # Fused processing after concatenation
         self.fused_layers = nn.Sequential(
-            nn.Linear(label_dim * 2, label_dim * 2),  # Concatenated features
+            nn.Linear(256 + 256, 256),  # img_embed (256) + label_embed (256)
+            nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.BatchNorm1d(label_dim * 2),
-            nn.Linear(label_dim * 2, label_dim),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.BatchNorm1d(label_dim),
-            nn.Linear(label_dim, label_dim)  # Output logits
+            nn.Linear(128, label_dim)  # Output logits
         )
         
     def forward(
@@ -111,18 +94,10 @@ class DenoisingModule(nn.Module):
         batch_size = image.shape[0]
         
         # Process image through convolutional pathway
-        img_features = self.image_conv(image)
-        img_embed = self.image_fc(img_features)
+        img_embed = self.image_conv(image)
         
-        # Process noised label
-        if self.label_conv is not None and noised_label.shape[1] == self.image_size * self.image_size * self.image_channels:
-            # Treat noised label as image (when embedding dimension matches image dimension)
-            noised_label_img = noised_label.view(batch_size, self.image_channels, self.image_size, self.image_size)
-            label_features = self.label_conv(noised_label_img)
-            label_embed = self.label_fc(label_features)
-        else:
-            # Standard FC processing for label embeddings
-            label_embed = self.label_fc(noised_label)
+        label_embed_s1 = self.noised_label_b1(noised_label)
+        label_embed = self.noised_label_b2(label_embed_s1) + label_embed_s1
         
         # Concatenate image and label embeddings
         fused_features = torch.cat([img_embed, label_embed], dim=1)
@@ -326,7 +301,7 @@ class NoPropNetwork(nn.Module):
         predicted_probs = F.softmax(prediction, dim=1)
         
         # L2 loss between predicted probabilities and target one-hot
-        cross_entropy_loss = F.cross_entropy(predicted_probs, target_embed)
+        cross_entropy_loss = F.mse_loss(predicted_probs, target_embed)
         
         # Layer-specific weighting based on cosine noise schedule
         noise_level = self.noise_schedule[layer_idx]

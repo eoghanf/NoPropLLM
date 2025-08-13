@@ -21,7 +21,6 @@ class TestNoPropConfig:
         assert config.batch_size == 128
         assert config.epochs == 100
         assert config.num_layers == 10
-        assert config.hidden_dim == 256
     
     def test_yaml_loading(self):
         """Test loading configuration from YAML file."""

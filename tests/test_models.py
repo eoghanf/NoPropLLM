@@ -18,8 +18,7 @@ class TestDenoisingModule:
         return DenoisingModule(
             image_channels=1,
             image_size=28,
-            label_dim=10,
-            hidden_dim=64
+            label_dim=10
         )
     
     def test_initialization(self, denoising_module):
@@ -27,7 +26,6 @@ class TestDenoisingModule:
         assert denoising_module.image_channels == 1
         assert denoising_module.image_size == 28
         assert denoising_module.label_dim == 10
-        assert denoising_module.hidden_dim == 64
     
     def test_forward_pass(self, denoising_module):
         """Test forward pass through denoising module."""
@@ -35,27 +33,21 @@ class TestDenoisingModule:
         image = torch.randn(batch_size, 1, 28, 28)
         noised_label = torch.randn(batch_size, 10)
         
-        # Test standard output (probabilities)
-        output = denoising_module(image, noised_label, return_logits=False)
-        assert output.shape == (batch_size, 10)
-        assert torch.allclose(output.sum(dim=1), torch.ones(batch_size), atol=1e-6)  # Should sum to 1
-        assert (output >= 0).all()  # Should be non-negative
-        
         # Test logits output
-        logits = denoising_module(image, noised_label, return_logits=True)
-        assert logits.shape == (batch_size, 10)
+        output = denoising_module(image, noised_label)
+        assert output.shape == (batch_size, 10)
     
     def test_different_image_sizes(self):
         """Test module with different image sizes."""
         # MNIST (28x28)
-        mnist_module = DenoisingModule(image_channels=1, image_size=28, label_dim=10, hidden_dim=32)
+        mnist_module = DenoisingModule(image_channels=1, image_size=28, label_dim=10)
         mnist_input = torch.randn(2, 1, 28, 28)
         mnist_label = torch.randn(2, 10)
         mnist_output = mnist_module(mnist_input, mnist_label)
         assert mnist_output.shape == (2, 10)
         
         # CIFAR (32x32)
-        cifar_module = DenoisingModule(image_channels=3, image_size=32, label_dim=10, hidden_dim=32)
+        cifar_module = DenoisingModule(image_channels=3, image_size=32, label_dim=10)
         cifar_input = torch.randn(2, 3, 32, 32)
         cifar_label = torch.randn(2, 10)
         cifar_output = cifar_module(cifar_input, cifar_label)
@@ -72,8 +64,7 @@ class TestNoPropNetwork:
             num_layers=5,  # Smaller for faster tests
             image_channels=1,
             image_size=28,
-            label_dim=10,
-            hidden_dim=64
+            label_dim=10
         )
     
     def test_initialization(self, noprop_network):
@@ -81,7 +72,6 @@ class TestNoPropNetwork:
         assert noprop_network.num_layers == 5
         assert noprop_network.label_dim == 10
         assert len(noprop_network.denoising_modules) == 5
-        assert noprop_network.embed_matrix.shape == (10, 10)  # Should be identity for label_dim=10
         assert noprop_network.alphas.shape == (5,)
     
     def test_noise_schedule(self, noprop_network):
@@ -95,7 +85,8 @@ class TestNoPropNetwork:
             noisy_label = noprop_network.get_noisy_label(labels, layer_idx)
             
             # Calculate approximate noise level
-            clean_embed = noprop_network.embed_matrix[labels]
+            clean_embed = torch.zeros(batch_size, 10)
+            clean_embed.scatter_(1, labels.unsqueeze(1), 1.0)
             noise_ratio = torch.mean(torch.abs(noisy_label - clean_embed)).item()
             noise_levels.append(noise_ratio)
         
@@ -157,8 +148,7 @@ class TestNoPropNetwork:
             num_layers=3,
             image_channels=3,
             image_size=32,
-            label_dim=100,
-            hidden_dim=32
+            label_dim=100
         )
         
         batch_size = 2

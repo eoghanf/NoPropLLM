@@ -48,6 +48,9 @@ class NoPropTrainer:
         self.best_accuracy = 0.0
         self.training_history = []
         
+        # Loss collection for statistics
+        self.epoch_losses = []
+        
         # Timers
         self.epoch_timer = Timer()
         self.batch_timer = BatchTimer()
@@ -100,7 +103,7 @@ class NoPropTrainer:
         )
         return optimizer
     
-    def train_epoch(self, train_loader: DataLoader, test_loader: DataLoader, epoch: int) -> float:
+    def train_epoch(self, train_loader: DataLoader, test_loader: DataLoader, epoch: int) -> Tuple[float, Dict]:
         """
         Train the model for one epoch using either diffusion or backpropagation.
         
@@ -110,7 +113,7 @@ class NoPropTrainer:
             epoch: Current epoch number
             
         Returns:
-            Average training loss for the epoch
+            Tuple of (average training loss, epoch statistics dict)
         """
         if self.training_mode == 'diffusion':
             return self._train_epoch_diffusion(train_loader, test_loader, epoch)
@@ -121,6 +124,7 @@ class NoPropTrainer:
         """Train the model for one epoch using diffusion (NoProp) training."""
         self.model.train()
         loss_meter = AverageMeter()
+        self.epoch_losses = []  # Reset for new epoch
         
         for batch_idx, (data, target) in enumerate(train_loader):
             # Start batch timer
@@ -155,12 +159,22 @@ class NoPropTrainer:
             # No separate classifier training needed (identity function has no parameters)
             # The final denoising layer serves as the classifier
             
+            # Collect loss for epoch statistics
+            self.epoch_losses.append(batch_loss)
             loss_meter.update(batch_loss, data.size(0))
             
-            # Stop batch timer and compute validation metrics
+            # Stop batch timer 
             batch_time = self.batch_timer.stop()
-            val_batches = getattr(self.config, 'validation_batches_per_log', 5)
-            val_loss, val_accuracy = self._validate_batch_subset(test_loader, max_batches=val_batches)
+            
+            # For diffusion training, skip batch-level validation as it's unreliable
+            # (model is in inconsistent state during layer-by-layer training)
+            if self.training_mode == 'diffusion':
+                # Use dummy values for batch-level logging during diffusion
+                val_loss, val_accuracy = 0.0, 0.0
+            else:
+                # For backprop, batch-level validation is fine since whole model is trained
+                val_batches = getattr(self.config, 'validation_batches_per_log', 5)
+                val_loss, val_accuracy = self._validate_batch_subset(test_loader, max_batches=val_batches)
             
             # Log metrics after every batch
             self.logger.log_batch_metrics(
@@ -180,12 +194,22 @@ class NoPropTrainer:
                       f'({100. * batch_idx / len(train_loader):.0f}%)]\t'
                       f'Loss: {batch_loss:.6f}\tVal Acc: {val_accuracy:.2f}%')
         
-        return loss_meter.avg
+        # At epoch end, compute and log statistics
+        epoch_stats = self._compute_epoch_loss_stats()
+        if epoch_stats:
+            print(f'Epoch {epoch} Loss Stats - Mean: {epoch_stats["train_loss_mean"]:.6f}, '
+                  f'Std: {epoch_stats["train_loss_std"]:.6f}, '
+                  f'Min: {epoch_stats["train_loss_min"]:.6f}, '
+                  f'Max: {epoch_stats["train_loss_max"]:.6f}')
+        
+        # Return epoch stats so main training loop can log with validation metrics
+        return loss_meter.avg, epoch_stats
     
     def _train_epoch_backprop(self, train_loader: DataLoader, test_loader: DataLoader, epoch: int) -> float:
         """Train the model for one epoch using standard backpropagation."""
         self.model.train()
         loss_meter = AverageMeter()
+        self.epoch_losses = []  # Reset for new epoch
         
         for batch_idx, (data, target) in enumerate(train_loader):
             # Start batch timer
@@ -212,6 +236,8 @@ class NoPropTrainer:
             
             self.optimizer.step()
             
+            # Collect loss for epoch statistics
+            self.epoch_losses.append(loss.item())
             loss_meter.update(loss.item(), data.size(0))
             
             # Stop batch timer and compute validation metrics
@@ -237,7 +263,16 @@ class NoPropTrainer:
                       f'({100. * batch_idx / len(train_loader):.0f}%)]\t'
                       f'Loss: {loss.item():.6f}\tVal Acc: {val_accuracy:.2f}%')
         
-        return loss_meter.avg
+        # At epoch end, compute and log statistics
+        epoch_stats = self._compute_epoch_loss_stats()
+        if epoch_stats:
+            print(f'Epoch {epoch} Loss Stats - Mean: {epoch_stats["train_loss_mean"]:.6f}, '
+                  f'Std: {epoch_stats["train_loss_std"]:.6f}, '
+                  f'Min: {epoch_stats["train_loss_min"]:.6f}, '
+                  f'Max: {epoch_stats["train_loss_max"]:.6f}')
+        
+        # Return epoch stats so main training loop can log with validation metrics
+        return loss_meter.avg, epoch_stats
     
     def _validate_batch_subset(self, test_loader: DataLoader, max_batches: int = 5) -> Tuple[float, float]:
         """
@@ -289,6 +324,51 @@ class NoPropTrainer:
             return self.optimizers['layer_0'].param_groups[0]['lr']
         else:
             return self.optimizer.param_groups[0]['lr']
+    
+    def _compute_epoch_loss_stats(self) -> Dict:
+        """Compute epoch-level loss statistics from collected batch losses."""
+        if not self.epoch_losses:
+            return {}
+        
+        losses = torch.tensor(self.epoch_losses)
+        return {
+            'train_loss_mean': losses.mean().item(),
+            'train_loss_std': losses.std().item(),
+            'train_loss_min': losses.min().item(), 
+            'train_loss_max': losses.max().item(),
+            'train_loss_median': losses.median().item(),
+            'train_loss_count': len(self.epoch_losses)
+        }
+    
+    def _evaluate_epoch_0(self, train_loader: DataLoader, test_loader: DataLoader):
+        """Evaluate untrained model performance and log as Epoch 0."""
+        print("\nEvaluating untrained model (Epoch 0)...")
+        
+        # Get validation performance
+        test_loss, test_accuracy, train_loss, train_accuracy = self.validate(test_loader, train_loader)
+        
+        print(f"Epoch 0 (Untrained Model):")
+        print(f"  Test loss: {test_loss:.4f}, Test accuracy: {test_accuracy:.2f}%")
+        if train_loss is not None and train_accuracy is not None:
+            print(f"  Train loss: {train_loss:.4f}, Train accuracy: {train_accuracy:.2f}%")
+        
+        # Create epoch 0 statistics (no batch-level variance for untrained model)
+        epoch_0_stats = {
+            'train_loss_mean': train_loss if train_loss is not None else 0.0,
+            'train_loss_std': 0.0,  # No training occurred, so no variance
+            'train_loss_min': train_loss if train_loss is not None else 0.0,
+            'train_loss_max': train_loss if train_loss is not None else 0.0,
+            'train_loss_median': train_loss if train_loss is not None else 0.0,
+            'train_loss_count': 0
+        }
+        
+        print(f"Epoch 0 Loss Stats - Mean: {epoch_0_stats['train_loss_mean']:.6f}, "
+              f"Std: {epoch_0_stats['train_loss_std']:.6f} (baseline)")
+        
+        # Log epoch 0 statistics
+        self.logger.log_epoch_end_stats(0, epoch_0_stats, test_loss, test_accuracy)
+        
+        return test_loss, test_accuracy, train_loss, train_accuracy
     
     def validate(self, test_loader: DataLoader, train_loader: DataLoader = None) -> Tuple[float, float, float, float]:
         """
@@ -369,19 +449,15 @@ class NoPropTrainer:
         print("Starting training...")
         print("=" * 80)
         
-        # Initial validation
-        test_loss, test_accuracy, train_loss, train_accuracy = self.validate(test_loader, train_loader)
-        print(f"Before training:")
-        print(f"  Test loss: {test_loss:.4f}, Test accuracy: {test_accuracy:.2f}%")
-        if train_loss is not None and train_accuracy is not None:
-            print(f"  Train loss: {train_loss:.4f}, Train accuracy: {train_accuracy:.2f}%")
+        # Evaluate and log untrained model performance (Epoch 0)
+        test_loss, test_accuracy, train_loss, train_accuracy = self._evaluate_epoch_0(train_loader, test_loader)
         
         for epoch in range(1, self.config.epochs + 1):
             self.current_epoch = epoch
             self.epoch_timer.start()
             
             # Train for one epoch
-            avg_train_loss = self.train_epoch(train_loader, test_loader, epoch)
+            avg_train_loss, epoch_stats = self.train_epoch(train_loader, test_loader, epoch)
             
             # Validate
             test_loss, test_accuracy, train_loss, train_accuracy = self.validate(test_loader, train_loader)
@@ -393,6 +469,10 @@ class NoPropTrainer:
                     self.save_checkpoint(self.config.best_model_path, is_best=True)
             
             epoch_time = self.epoch_timer.stop()
+            
+            # Log epoch-end statistics with proper validation metrics
+            if epoch_stats:
+                self.logger.log_epoch_end_stats(epoch, epoch_stats, test_loss, test_accuracy)
             
             # Log epoch end to the logger
             self.logger.log_epoch_end(epoch)

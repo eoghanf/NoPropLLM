@@ -3,9 +3,10 @@
 Clean CIFAR-10 training script using YAML configuration.
 
 Usage:
-    python train_cifar10.py                          # Use default experiment_configs/cifar10.yaml
+    python train_cifar10.py                          # Use default diffusion method
     python train_cifar10.py --config my_config.yaml # Use custom config file
     python train_cifar10.py --epochs 200            # Override specific parameters
+    python train_cifar10.py --method backpropagation # Use backpropagation instead of diffusion
 """
 
 import argparse
@@ -24,7 +25,7 @@ from src.utils import print_training_header
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Train NoProp model on CIFAR-10 dataset",
+        description="Train model on CIFAR-10 dataset",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -33,7 +34,16 @@ def parse_args():
         '--config', 
         type=str, 
         default=None,
-        help="Path to YAML configuration file (default: experiment_configs/cifar10.yaml)"
+        help="Path to YAML configuration file (default: auto-selected based on method)"
+    )
+    
+    # Method selection
+    parser.add_argument(
+        '--method',
+        type=str,
+        choices=['diffusion', 'backpropagation'],
+        default='diffusion',
+        help="Training method to use (default: diffusion)"
     )
     
     # Override parameters
@@ -42,7 +52,6 @@ def parse_args():
     parser.add_argument('--learning_rate', type=float, help="Learning rate")
     parser.add_argument('--weight_decay', type=float, help="Weight decay")
     parser.add_argument('--num_layers', type=int, help="Number of denoising layers")
-    parser.add_argument('--hidden_dim', type=int, help="Hidden dimension size")
     parser.add_argument('--seed', type=int, help="Random seed")
     parser.add_argument('--augment', action='store_true', help="Enable data augmentation")
     parser.add_argument('--log_interval', type=int, help="Log interval for training progress")
@@ -81,13 +90,19 @@ def main():
         print(f"Loading configuration from: {args.config}")
         config = load_config(config_path=args.config)
     else:
-        print("Using default CIFAR-10 configuration")
-        config = load_config(dataset='cifar10')
+        # Auto-select default config based on method
+        if args.method == 'diffusion':
+            print("Using default CIFAR-10 diffusion configuration")
+            config_path = Path("experiment_configs/cifar10diffusion.yaml")
+        else:
+            print("Using default CIFAR-10 backpropagation configuration")
+            config_path = Path("experiment_configs/cifar10backpropagation.yaml")
+        config = load_config(config_path=config_path)
     
     # Override configuration parameters from command line
     overrides = {}
     for key, value in vars(args).items():
-        if value is not None and key not in ['config', 'list_configs']:
+        if value is not None and key not in ['config', 'list_configs', 'method']:
             overrides[key] = value
     
     if overrides:

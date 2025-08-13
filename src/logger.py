@@ -88,7 +88,9 @@ class TrainingLogger:
         headers = [
             'batch', 'epoch', 'wall_time_seconds', 'wall_time_minutes',
             'train_loss', 'val_loss', 'val_accuracy', 'learning_rate',
-            'batch_time_seconds', 'samples_per_second'
+            'batch_time_seconds', 'samples_per_second',
+            # Epoch-level statistics (only filled for epoch-end entries)
+            'train_loss_std', 'train_loss_min', 'train_loss_max', 'train_loss_median'
         ]
         
         with open(self.csv_path, 'w', newline='') as f:
@@ -168,7 +170,12 @@ class TrainingLogger:
                 f"{metric_entry['val_accuracy']:.2f}",
                 f"{metric_entry['learning_rate']:.8f}" if metric_entry['learning_rate'] else "",
                 f"{metric_entry['batch_time_seconds']:.3f}" if metric_entry['batch_time_seconds'] else "",
-                f"{metric_entry['samples_per_second']:.1f}"
+                f"{metric_entry['samples_per_second']:.1f}",
+                # Statistics fields (empty for batch-level entries)
+                f"{metric_entry['train_loss_std']:.6f}" if 'train_loss_std' in metric_entry else "",
+                f"{metric_entry['train_loss_min']:.6f}" if 'train_loss_min' in metric_entry else "",
+                f"{metric_entry['train_loss_max']:.6f}" if 'train_loss_max' in metric_entry else "",
+                f"{metric_entry['train_loss_median']:.6f}" if 'train_loss_median' in metric_entry else ""
             ]
             writer.writerow(row)
     
@@ -189,6 +196,42 @@ class TrainingLogger:
         """Mark the end of an epoch."""
         self.epoch_count = epoch
         # Force save JSON at epoch end
+        self._save_json()
+    
+    def log_epoch_end_stats(self, epoch: int, stats: Dict, val_loss: float = 0.0, val_accuracy: float = 0.0):
+        """Log epoch-level statistics."""
+        current_time = time.time()
+        wall_time_seconds = current_time - self.start_time
+        wall_time_minutes = wall_time_seconds / 60.0
+        
+        # Create a special epoch-end entry with statistics
+        epoch_entry = {
+            'batch': -1,  # Special marker for epoch-end entry
+            'global_batch': -1,
+            'epoch': epoch,
+            'wall_time_seconds': wall_time_seconds,
+            'wall_time_minutes': wall_time_minutes,
+            'train_loss': stats.get('train_loss_mean', 0),
+            'val_loss': val_loss,
+            'val_accuracy': val_accuracy,
+            'learning_rate': 0,  # Could add current LR if needed
+            'batch_time_seconds': 0,
+            'samples_per_second': 0,
+            'train_loss_std': stats.get('train_loss_std', 0),
+            'train_loss_min': stats.get('train_loss_min', 0),
+            'train_loss_max': stats.get('train_loss_max', 0),
+            'train_loss_median': stats.get('train_loss_median', 0),
+            'is_epoch_summary': True,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Store in memory
+        self.metrics.append(epoch_entry)
+        
+        # Write to CSV
+        self._append_to_csv(epoch_entry)
+        
+        # Save JSON
         self._save_json()
     
     def finalize(self):

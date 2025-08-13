@@ -21,7 +21,6 @@ class TestTrainingIntegration:
             epochs=2,  # Very short for testing
             batch_size=8,
             num_layers=3,  # Small network
-            hidden_dim=32,
             learning_rate=0.01,
             seed=42,
             log_interval=1,  # Log every batch for testing
@@ -89,7 +88,8 @@ class TestTrainingIntegration:
         noise_levels = []
         for layer_idx in range(model.num_layers):
             noisy_label = model.get_noisy_label(labels, layer_idx)
-            clean_embed = model.embed_matrix[labels]
+            clean_embed = torch.zeros(labels.size(0), 10)
+            clean_embed.scatter_(1, labels.unsqueeze(1), 1.0)
             
             # Calculate noise level
             noise_ratio = torch.mean(torch.abs(noisy_label - clean_embed)).item()
@@ -216,6 +216,19 @@ def cleanup_after_integration_tests():
     
     # Clean up any model files that might have been created
     import os
-    for filename in ['best_model.pt', 'final_model.pt', 'test_model.pt']:
-        if os.path.exists(filename):
-            os.remove(filename)
+    from pathlib import Path
+    
+    # Check root directory and checkpoint directories
+    paths_to_check = [
+        '',  # Root directory
+        'checkpoints/',
+        'checkpoints/test_checkpoints/'
+    ]
+    
+    filenames = ['best_model.pt', 'final_model.pt', 'test_model.pt']
+    
+    for path in paths_to_check:
+        for filename in filenames:
+            full_path = Path(path) / filename if path else filename
+            if full_path.exists():
+                full_path.unlink()

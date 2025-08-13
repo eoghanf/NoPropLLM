@@ -1,37 +1,8 @@
-# NoProp: Training Neural Networks Without Back-propagation
+![image](Title.png)
 
-This repository implements the NoProp method for training neural networks using denoising score matching instead of traditional backpropagation.
 
-## Project Structure
-
-```
-NoProp/
-├── src/                    # Source code
-│   ├── models.py          # NoProp network implementation
-│   ├── trainer.py         # Training logic
-│   ├── config.py          # Configuration management
-│   ├── dataloaders.py     # Dataset loading utilities
-│   ├── utils.py           # Utility functions
-│   └── __init__.py        # Package initialization
-├── experiment_configs/     # YAML experiment configurations
-│   ├── mnist.yaml         # MNIST configuration
-│   ├── cifar10.yaml       # CIFAR-10 configuration
-│   └── cifar100.yaml      # CIFAR-100 configuration
-├── tests/                 # Test suite
-│   ├── test_config.py     # Configuration tests
-│   ├── test_models.py     # Model tests
-│   ├── test_dataloaders.py # Data loading tests
-│   ├── test_utils.py      # Utility tests
-│   └── test_integration.py # Integration tests
-├── checkpoints/           # Model checkpoints
-│   └── test_checkpoints/  # Test checkpoints (isolated)
-├── data/                  # Dataset storage (created automatically)
-├── train_mnist.py         # MNIST training script
-├── train_cifar10.py       # CIFAR-10 training script
-├── train_cifar100.py      # CIFAR-100 training script
-├── train_universal.py     # Universal training script
-└── MNISTTraining.py       # Legacy training script (deprecated)
-```
+This repository implements the NoProp method for training neural networks using diffusion instead of traditional backpropagation.
+The method trains each layer in a network which jointly denoises images and labels. 
 
 ## Quick Start
 
@@ -42,27 +13,31 @@ conda activate NoProp
 pip install torch torchvision pyyaml pytest
 ```
 
-### 2. Train on MNIST
+### 2. Train on MNIST, CIFAR10 or CIFAR100
 
 ```bash
 # Use default MNIST configuration
 python train_mnist.py
+
+# Default CIFAR-10 configuration
+python train_cifar10.py
+
+# Default CIFAR-100 configuration
+python train_cifar100,py
+
+```
+
+### 3. Train with custom configurations
+
+```bash
+# Train on CIFAR-100 with custom epochs
+python train_universal.py cifar100 --epochs 300
 
 # Override specific parameters
 python train_mnist.py --epochs 50 --batch_size 64
 
 # Use custom configuration file
 python train_mnist.py --config my_config.yaml
-```
-
-### 3. Train on Other Datasets
-
-```bash
-# Train on CIFAR-10
-python train_universal.py cifar10
-
-# Train on CIFAR-100 with custom epochs
-python train_universal.py cifar100 --epochs 300
 
 # List available configurations
 python train_universal.py --list-configs
@@ -80,60 +55,8 @@ epochs: 100
 learning_rate: 0.001
 weight_decay: 0.001
 num_layers: 10
-hidden_dim: 256
 # ... more parameters
 ```
-
-### Creating Custom Configurations
-
-1. Copy an existing config: `cp experiment_configs/mnist.yaml my_experiment.yaml`
-2. Modify parameters as needed
-3. Run with: `python train_universal.py --config my_experiment.yaml`
-
-## Testing
-
-Run the test suite with pytest:
-
-```bash
-# Run all tests
-pytest
-
-# Run only fast tests (skip data downloading)
-pytest -m "not slow"
-
-# Run with verbose output
-pytest -v
-
-# Run specific test file
-pytest tests/test_models.py
-```
-
-### Test Categories
-
-- **Unit tests**: Test individual components (models, config, utils)
-- **Integration tests**: Test end-to-end functionality  
-- **Slow tests**: Tests that download data or take time
-
-## Key Features
-
-### 1. Modular Design
-- Clean separation between models, training, configuration, and data loading
-- Easy to extend to new datasets and experiments
-
-### 2. YAML Configuration
-- All experiment settings in readable YAML files
-- Easy parameter sweeps and experiment tracking
-- Command-line overrides supported
-
-### 3. Flexible Training Scripts
-- Dataset-specific scripts (`train_mnist.py`)
-- Universal script for any dataset (`train_universal.py`)
-- Comprehensive logging and checkpointing
-
-### 4. Robust Testing
-- Comprehensive test suite with pytest
-- Unit tests, integration tests, and slow tests
-- Automated CI/CD ready
 
 ## Implementation Details
 
@@ -142,6 +65,9 @@ pytest tests/test_models.py
 - Noise schedule: 0.9 → 0.01 across layers
 - Clean images provided to all layers (per Figure 1 in paper)
 - Independent layer training + classifier training every batch
+
+![image](Figure1.png)
+
 
 ### Architecture
 - 10-layer denoising network (configurable)
@@ -156,32 +82,13 @@ pytest tests/test_models.py
 
 ## Results
 
-The implementation achieves excellent performance:
-- **MNIST**: >98.8% accuracy
-- **CIFAR-10**: Comparable to paper results
-- **CIFAR-100**: Competitive performance
-
-## Extending the Code
-
-### Adding New Datasets
-1. Add loader function to `src/dataloaders.py`
-2. Add dataset info to `get_dataset_info()`
-3. Create YAML config in `experiment_configs/`
-4. Add to `DATASET_LOADERS` registry
-
-### Custom Architectures  
-1. Modify `DenoisingModule` in `src/models.py`
-2. Update configuration parameters as needed
-3. Ensure gradient flow works correctly
-
-### Experiment Tracking
-- Training history automatically saved
-- Checkpoints include configuration for reproducibility  
-- Easy to add logging frameworks (wandb, tensorboard)
+| Dataset    | Validation Accuracy (Reproduced) | Validation Accuracy (Paper) |
+|------------|-----------------------------------|------------------------------|
+| MNIST      | 99.5%                            | 99.5%                        |
+| CIFAR-10   | 78.4%                            | 79.25%                       |
+| CIFAR-100  | 53.5%                            | 45.9%                        |
 
 ## Citation
-
-If you use this implementation, please cite the original paper:
 
 ```bibtex
 @article{noprop2024,
@@ -190,4 +97,61 @@ If you use this implementation, please cite the original paper:
   journal={arXiv preprint arXiv:2503.24322},
   year={2024}
 }
+```
+
+## Project Structure
+
+```
+NoProp/
+├── src/                              # Source code
+│   ├── models.py                     # NoProp network implementation
+│   ├── trainer.py                    # Training logic
+│   ├── config.py                     # Configuration management
+│   ├── dataloaders.py                # Dataset loading utilities
+│   ├── utils.py                      # Utility functions
+│   ├── logger.py                     # Logging utilities
+│   └── __init__.py                   # Package initialization
+├── experiment_configs/               # YAML experiment configurations
+│   ├── mnistdiffusion.yaml          # MNIST diffusion configuration
+│   ├── mnistbackpropagation.yaml    # MNIST backpropagation configuration
+│   ├── cifar10diffusion.yaml        # CIFAR-10 diffusion configuration
+│   ├── cifar10backpropagation.yaml  # CIFAR-10 backpropagation configuration
+│   ├── cifar100diffusion.yaml       # CIFAR-100 diffusion configuration
+│   └── cifar100backpropagation.yaml # CIFAR-100 backpropagation configuration
+├── tests/                           # Test suite
+│   ├── test_config.py               # Configuration tests
+│   ├── test_models.py               # Model tests
+│   ├── test_dataloaders.py          # Data loading tests
+│   ├── test_utils.py                # Utility tests
+│   ├── test_integration.py          # Integration tests
+│   └── __init__.py                  # Test package initialization
+├── training_logs/                   # Training logs and metrics
+│   ├── README.md                    # Documentation for logs
+│   └── [timestamp]_*.json/csv       # Training logs, configs, and metrics
+├── checkpoints/                     # Model checkpoints
+│   ├── best_*.pt                    # Best model checkpoints
+│   ├── final_*.pt                   # Final model checkpoints
+│   └── test_checkpoints/            # Test checkpoints (isolated)
+├── data/                            # Dataset storage (created automatically)
+│   ├── MNIST/                       # MNIST dataset files
+│   ├── cifar-10-batches-py/         # CIFAR-10 dataset files
+│   └── cifar-100-python/            # CIFAR-100 dataset files
+├── graphs/                          # Performance comparison graphs
+│   ├── MNISTcomparison.png          # MNIST results visualization
+│   ├── CIFAR10comparison.png        # CIFAR-10 results visualization
+│   └── CIFAR100comparison.png       # CIFAR-100 results visualization
+├── log_analysis/                    # Log analysis utilities
+│   ├── README.md                    # Log analysis documentation
+│   └── compare_logs.py              # Log comparison script
+├── train_mnistdiffusion.py          # MNIST diffusion training script
+├── train_mnistbackpropagation.py    # MNIST backpropagation training script
+├── train_cifar10diffusion.py        # CIFAR-10 diffusion training script
+├── train_cifar10backpropagation.py  # CIFAR-10 backpropagation training script
+├── train_cifar100diffusion.py       # CIFAR-100 diffusion training script
+├── train_cifar100backpropagation.py # CIFAR-100 backpropagation training script
+├── test_logging.py                  # Logging test script
+├── pytest.ini                      # Pytest configuration
+├── requirements.txt                 # Python dependencies
+├── Title.png                        # Project title image
+└── NoProp:TrainingNNWithoutBackPropagation.pdf # Reference paper
 ```
