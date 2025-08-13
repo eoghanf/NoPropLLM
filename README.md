@@ -1,4 +1,4 @@
-![image](Title.png)
+![image](image_assets/Title.png)
 
 
 This repository implements the NoProp method for training neural networks using diffusion instead of traditional backpropagation.
@@ -66,7 +66,7 @@ num_layers: 10
 - Clean images provided to all layers (per Figure 1 in paper)
 - Independent layer training + classifier training every batch
 
-![image](Figure1.png)
+![image](image_assets/Figure1.png)
 
 
 ### Architecture
