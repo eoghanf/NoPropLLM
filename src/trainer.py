@@ -543,7 +543,7 @@ class NoPropTrainer:
     
     def load_checkpoint(self, filepath: str):
         """Load training checkpoint."""
-        checkpoint = torch.load(filepath, map_location=self.device)
+        checkpoint = torch.load(filepath, map_location=self.device, weights_only=False)
         
         # Load model state
         self.model.load_state_dict(checkpoint['model_state_dict'])

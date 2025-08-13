@@ -56,20 +56,20 @@ class TestTrainingIntegration:
         
         # Verify trainer setup
         assert trainer.model is not None
-        assert len(trainer.optimizers) == simple_config.num_layers + 1  # layers + final
+        assert len(trainer.optimizers) == simple_config.num_layers  # one per denoising layer
         assert trainer.device == torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Test initial validation (should not crash)
-        initial_loss, initial_acc = trainer.validate(test_loader)
+        initial_loss, initial_acc, _, _ = trainer.validate(test_loader)
         assert initial_loss > 0
         assert 0 <= initial_acc <= 100
         
         # Test single training epoch (should not crash)
-        train_loss = trainer.train_epoch(train_loader, epoch=1)
+        train_loss, _ = trainer.train_epoch(train_loader, test_loader, epoch=1)
         assert train_loss >= 0
         
         # Test validation after training (should not crash)
-        final_loss, final_acc = trainer.validate(test_loader)
+        final_loss, final_acc, _, _ = trainer.validate(test_loader)
         assert final_loss >= 0
         assert 0 <= final_acc <= 100
     
@@ -205,7 +205,7 @@ class TestTrainingIntegration:
         
         # Verify history contains expected keys
         history_entry = trainer.training_history[0]
-        expected_keys = {'epoch', 'train_loss', 'test_loss', 'accuracy', 'time'}
+        expected_keys = {'epoch', 'train_loss', 'test_loss', 'test_accuracy', 'time'}
         assert set(history_entry.keys()) >= expected_keys
 
 
@@ -229,6 +229,6 @@ def cleanup_after_integration_tests():
     
     for path in paths_to_check:
         for filename in filenames:
-            full_path = Path(path) / filename if path else filename
+            full_path = Path(path) / filename if path else Path(filename)
             if full_path.exists():
                 full_path.unlink()

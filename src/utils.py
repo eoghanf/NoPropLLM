@@ -125,7 +125,7 @@ def load_checkpoint(filepath: str, model: torch.nn.Module, optimizers: Optional[
     Returns:
         Dictionary containing checkpoint information
     """
-    checkpoint = torch.load(filepath, map_location='cpu')
+    checkpoint = torch.load(filepath, map_location='cpu', weights_only=False)
     
     # Load model state
     model.load_state_dict(checkpoint['model_state_dict'])

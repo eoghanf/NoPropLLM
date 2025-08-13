@@ -225,7 +225,7 @@ class NoPropNetwork(nn.Module):
             clean_embed = y
         
         # Get noise level from cosine schedule
-        noise_level = self.noise_schedule[layer_idx]
+        noise_level = self.noise_schedule[layer_idx].to(device)
         
         if noise is None:
             noise = torch.randn_like(clean_embed)
@@ -304,7 +304,7 @@ class NoPropNetwork(nn.Module):
         cross_entropy_loss = F.mse_loss(predicted_probs, target_embed)
         
         # Layer-specific weighting based on cosine noise schedule
-        noise_level = self.noise_schedule[layer_idx]
+        noise_level = self.noise_schedule[layer_idx].to(device)
         
         # Higher noise levels get higher weights (harder denoising task)
         weight = noise_level.clamp(min=0.01)
