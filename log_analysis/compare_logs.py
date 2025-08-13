@@ -45,10 +45,44 @@ def filter_data_by_epochs(df, max_epochs):
     return filtered_df
 
 
+def get_epoch_end_data(df):
+    """Extract only the last batch data for each epoch (end-of-epoch data)."""
+    # Check if we have epoch summary entries (batch = -1) with statistics
+    if 'train_loss_std' in df.columns and (df['batch'] == -1).any():
+        # Prefer epoch summary entries if available
+        epoch_summary_df = df[df['batch'] == -1].copy()
+        # Also get regular epoch-end data for epochs without summary
+        regular_epoch_end = df[df['batch'] != -1].groupby('epoch').last().reset_index()
+        
+        # Combine them, prioritizing summary entries
+        combined_epochs = set(epoch_summary_df['epoch']).union(set(regular_epoch_end['epoch']))
+        result_rows = []
+        
+        for epoch in sorted(combined_epochs):
+            summary_row = epoch_summary_df[epoch_summary_df['epoch'] == epoch]
+            if not summary_row.empty:
+                result_rows.append(summary_row.iloc[0])
+            else:
+                regular_row = regular_epoch_end[regular_epoch_end['epoch'] == epoch]
+                if not regular_row.empty:
+                    result_rows.append(regular_row.iloc[0])
+        
+        if result_rows:
+            epoch_end_df = pd.DataFrame(result_rows)
+            return epoch_end_df
+    
+    # Fallback to original behavior
+    epoch_end_df = df.groupby('epoch').last().reset_index()
+    return epoch_end_df
+
+
 def plot_training_curves(df, output_dir=None, experiment_name="training", max_epochs=None):
     """Create training curve plots in 2x2 layout."""
     # Filter data if max_epochs is specified
     df = filter_data_by_epochs(df, max_epochs)
+    
+    # Extract end-of-epoch data for cleaner plots
+    epoch_df = get_epoch_end_data(df)
     
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     title = f'{experiment_name} - Training Progress'
@@ -56,17 +90,30 @@ def plot_training_curves(df, output_dir=None, experiment_name="training", max_ep
         title += f' (up to epoch {max_epochs})'
     fig.suptitle(title, fontsize=16)
     
-    # Top Left: Training Loss vs Wall Time
+    # Check if we have standard deviation data
+    has_std_data = 'train_loss_std' in epoch_df.columns and not epoch_df['train_loss_std'].isna().all()
+    
+    # Top Left: Training Loss vs Wall Time (using epoch end data)
     ax1 = axes[0, 0]
-    ax1.plot(df['wall_time_minutes'], df['train_loss'], 'b-', alpha=0.7, linewidth=1.5)
+    if has_std_data:
+        ax1.errorbar(epoch_df['wall_time_minutes'], epoch_df['train_loss'], 
+                    yerr=epoch_df['train_loss_std'], color='blue', alpha=0.8, 
+                    linewidth=2, marker='o', markersize=3, capsize=3, capthick=1, elinewidth=1)
+    else:
+        ax1.plot(epoch_df['wall_time_minutes'], epoch_df['train_loss'], 'b-', alpha=0.8, linewidth=2, marker='o', markersize=3)
     ax1.set_xlabel('Wall Time (minutes)')
     ax1.set_ylabel('Training Loss')
-    ax1.set_title('Training Loss vs Wall Time')
+    ax1.set_title('Training Loss vs Wall Time (Per Epoch)')
     ax1.grid(True, alpha=0.3)
     
     # Top Right: Training Loss vs Epochs
     ax2 = axes[0, 1]
-    ax2.plot(df['epoch'], df['train_loss'], 'b-', alpha=0.7, linewidth=1.5)
+    if has_std_data:
+        ax2.errorbar(epoch_df['epoch'], epoch_df['train_loss'], 
+                    yerr=epoch_df['train_loss_std'], color='blue', alpha=0.8, 
+                    linewidth=2, marker='o', markersize=3, capsize=3, capthick=1, elinewidth=1)
+    else:
+        ax2.plot(epoch_df['epoch'], epoch_df['train_loss'], 'b-', alpha=0.8, linewidth=2, marker='o', markersize=3)
     ax2.set_xlabel('Epoch')
     ax2.set_ylabel('Training Loss')
     ax2.set_title('Training Loss vs Epochs')
@@ -74,18 +121,18 @@ def plot_training_curves(df, output_dir=None, experiment_name="training", max_ep
     
     # Bottom Left: Validation Loss vs Wall Time
     ax3 = axes[1, 0]
-    ax3.plot(df['wall_time_minutes'], df['val_loss'], 'r-', alpha=0.7, linewidth=1.5)
+    ax3.plot(epoch_df['wall_time_minutes'], epoch_df['val_loss'], '#ff7f0e', alpha=0.8, linewidth=2, marker='s', markersize=3)
     ax3.set_xlabel('Wall Time (minutes)')
     ax3.set_ylabel('Validation Loss')
-    ax3.set_title('Validation Loss vs Wall Time')
+    ax3.set_title('Validation Loss vs Wall Time (Per Epoch)')
     ax3.grid(True, alpha=0.3)
     
     # Bottom Right: Validation Accuracy vs Wall Time
     ax4 = axes[1, 1]
-    ax4.plot(df['wall_time_minutes'], df['val_accuracy'], 'g-', alpha=0.7, linewidth=1.5)
+    ax4.plot(epoch_df['wall_time_minutes'], epoch_df['val_accuracy'], 'g-', alpha=0.8, linewidth=2, marker='^', markersize=3)
     ax4.set_xlabel('Wall Time (minutes)')
     ax4.set_ylabel('Validation Accuracy (%)')
-    ax4.set_title('Validation Accuracy vs Wall Time')
+    ax4.set_title('Validation Accuracy vs Wall Time (Per Epoch)')
     ax4.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -104,10 +151,23 @@ def print_summary_stats(df, experiment_name="training"):
     print(f"\n=== {experiment_name} Summary Statistics ===")
     print(f"Total training time: {df['wall_time_minutes'].max():.2f} minutes")
     print(f"Total batches: {len(df)}")
+    
+    # Check if we have epoch 0 data and calculate improvement
+    epoch_0_data = df[df['epoch'] == 0]
+    final_accuracy = df['val_accuracy'].iloc[-1]
+    best_accuracy = df['val_accuracy'].max()
+    
+    if not epoch_0_data.empty:
+        initial_acc = epoch_0_data['val_accuracy'].iloc[0]
+        print(f"Initial validation accuracy (Epoch 0): {initial_acc:.2f}%")
+        print(f"Final validation accuracy: {final_accuracy:.2f}% (Δ: +{final_accuracy-initial_acc:.2f}%)")
+        print(f"Best validation accuracy: {best_accuracy:.2f}% (Δ: +{best_accuracy-initial_acc:.2f}%)")
+    else:
+        print(f"Final validation accuracy: {final_accuracy:.2f}%")
+        print(f"Best validation accuracy: {best_accuracy:.2f}%")
+    
     print(f"Final training loss: {df['train_loss'].iloc[-1]:.4f}")
     print(f"Final validation loss: {df['val_loss'].iloc[-1]:.4f}")
-    print(f"Final validation accuracy: {df['val_accuracy'].iloc[-1]:.2f}%")
-    print(f"Best validation accuracy: {df['val_accuracy'].max():.2f}%")
     
     # Find epoch/batch where best accuracy occurred
     best_idx = df['val_accuracy'].idxmax()
@@ -130,33 +190,62 @@ def compare_experiments(log_paths, labels=None, output_dir=None, max_epochs=None
         title += f' (up to epoch {max_epochs})'
     fig.suptitle(title, fontsize=16)
     
-    # Define colors for different experiments (default: green and blue)
+    # Define better colors for comparison: blue and orange with transparency
     if len(log_paths) == 2:
-        colors = ['green', 'blue']
+        colors = ['#1f77b4', '#ff7f0e']  # Blue and orange
+        markers = ['o', 's']  # Circle and square
     else:
         colors = plt.cm.Set1(np.linspace(0, 1, len(log_paths)))
+        markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h'][:len(log_paths)]
     
     for i, (log_path, label) in enumerate(zip(log_paths, labels)):
         df = load_log_data(log_path)
         # Filter data if max_epochs is specified
         df = filter_data_by_epochs(df, max_epochs)
-        color = colors[i]
         
-        # Top Left: Training Loss vs Wall Time
-        axes[0, 0].plot(df['wall_time_minutes'], df['train_loss'], 
-                       label=label, alpha=0.7, linewidth=1.5, color=color)
+        # Extract end-of-epoch data for cleaner comparison
+        epoch_df = get_epoch_end_data(df)
+        
+        color = colors[i]
+        marker = markers[i] if len(log_paths) <= len(markers) else 'o'
+        
+        # Top Left: Training Loss vs Wall Time (using epoch end data)
+        has_std_data = 'train_loss_std' in epoch_df.columns and not epoch_df['train_loss_std'].isna().all()
+        
+        if has_std_data:
+            # Plot with error bars showing standard deviation
+            axes[0, 0].errorbar(epoch_df['wall_time_minutes'], epoch_df['train_loss'], 
+                               yerr=epoch_df['train_loss_std'], 
+                               label=label, alpha=0.8, linewidth=2, color=color,
+                               marker=marker, markersize=3, markevery=max(1, len(epoch_df)//20),
+                               capsize=3, capthick=1, elinewidth=1)
+        else:
+            axes[0, 0].plot(epoch_df['wall_time_minutes'], epoch_df['train_loss'], 
+                           label=label, alpha=0.8, linewidth=2, color=color, 
+                           marker=marker, markersize=3, markevery=max(1, len(epoch_df)//20))
         
         # Top Right: Training Loss vs Epochs
-        axes[0, 1].plot(df['epoch'], df['train_loss'], 
-                       label=label, alpha=0.7, linewidth=1.5, color=color)
+        if has_std_data:
+            # Plot with error bars showing standard deviation
+            axes[0, 1].errorbar(epoch_df['epoch'], epoch_df['train_loss'], 
+                               yerr=epoch_df['train_loss_std'],
+                               label=label, alpha=0.8, linewidth=2, color=color,
+                               marker=marker, markersize=3, markevery=max(1, len(epoch_df)//20),
+                               capsize=3, capthick=1, elinewidth=1)
+        else:
+            axes[0, 1].plot(epoch_df['epoch'], epoch_df['train_loss'], 
+                           label=label, alpha=0.8, linewidth=2, color=color,
+                           marker=marker, markersize=3, markevery=max(1, len(epoch_df)//20))
         
         # Bottom Left: Validation Loss vs Wall Time
-        axes[1, 0].plot(df['wall_time_minutes'], df['val_loss'], 
-                       label=label, alpha=0.7, linewidth=1.5, color=color)
+        axes[1, 0].plot(epoch_df['wall_time_minutes'], epoch_df['val_loss'], 
+                       label=label, alpha=0.8, linewidth=2, color=color,
+                       marker=marker, markersize=3, markevery=max(1, len(epoch_df)//20))
         
         # Bottom Right: Validation Accuracy vs Wall Time
-        axes[1, 1].plot(df['wall_time_minutes'], df['val_accuracy'], 
-                       label=label, alpha=0.7, linewidth=1.5, color=color)
+        axes[1, 1].plot(epoch_df['wall_time_minutes'], epoch_df['val_accuracy'], 
+                       label=label, alpha=0.8, linewidth=2, color=color,
+                       marker=marker, markersize=3, markevery=max(1, len(epoch_df)//20))
         
         # Print summary stats
         print(f"\n{label}:")
@@ -165,7 +254,7 @@ def compare_experiments(log_paths, labels=None, output_dir=None, max_epochs=None
     # Top Left: Training Loss vs Wall Time
     axes[0, 0].set_xlabel('Wall Time (minutes)')
     axes[0, 0].set_ylabel('Training Loss')
-    axes[0, 0].set_title('Training Loss vs Wall Time')
+    axes[0, 0].set_title('Training Loss vs Wall Time (Per Epoch)')
     axes[0, 0].legend()
     axes[0, 0].grid(True, alpha=0.3)
     
@@ -179,14 +268,14 @@ def compare_experiments(log_paths, labels=None, output_dir=None, max_epochs=None
     # Bottom Left: Validation Loss vs Wall Time
     axes[1, 0].set_xlabel('Wall Time (minutes)')
     axes[1, 0].set_ylabel('Validation Loss')
-    axes[1, 0].set_title('Validation Loss vs Wall Time')
+    axes[1, 0].set_title('Validation Loss vs Wall Time (Per Epoch)')
     axes[1, 0].legend()
     axes[1, 0].grid(True, alpha=0.3)
     
     # Bottom Right: Validation Accuracy vs Wall Time
     axes[1, 1].set_xlabel('Wall Time (minutes)')
     axes[1, 1].set_ylabel('Validation Accuracy (%)')
-    axes[1, 1].set_title('Validation Accuracy vs Wall Time')
+    axes[1, 1].set_title('Validation Accuracy vs Wall Time (Per Epoch)')
     axes[1, 1].legend()
     axes[1, 1].grid(True, alpha=0.3)
     
