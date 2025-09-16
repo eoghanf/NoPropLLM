@@ -1,8 +1,15 @@
-![image](image_assets/Title.png)
+# NoProp Language Modeling
 
+This repository implements the NoProp method for training transformer-based language models using diffusion techniques instead of traditional backpropagation. The method adapts the progressive denoising approach from the NoProp paper to perform next-token prediction on large-scale text datasets.
 
-This repository implements the NoProp method for training neural networks using diffusion instead of traditional backpropagation.
-The method trains each layer in a network which jointly denoises images and labels. 
+## Overview
+
+Instead of using backpropagation to train neural networks end-to-end, NoProp trains each transformer layer to denoise progressively less noisy token embeddings. This diffusion-based approach enables independent layer training while maintaining the sequential nature of language modeling.
+
+## Dataset
+
+The project uses the FineWeb dataset, a large-scale web text corpus designed for language model training. The dataset is stored in the `data/fineweb10B` directory across 8 files:
+- `fineweb_train_000001` through `fineweb_train_000008`
 
 ## Quick Start
 
@@ -14,80 +21,46 @@ conda activate NoProp
 pip install -r requirements.txt
 ```
 
-### 2. Train on MNIST, CIFAR10 or CIFAR100
+### 2. Train Language Model on FineWeb
 
 ```bash
-# Use default MNIST configuration
-python train_mnist.py
-
-# Default CIFAR-10 configuration
-python train_cifar10.py
-
-# Default CIFAR-100 configuration
-python train_cifar100,py
-
+# Train transformer with NoProp method
+python train_fineweb_v2.py
 ```
 
-### 3. Train with custom configurations
+### 3. Test Data Loading
 
 ```bash
-# Train on CIFAR-100 with custom epochs
-python train_universal.py cifar100 --epochs 300
-
-# Override specific parameters
-python train_mnist.py --epochs 50 --batch_size 64
-
-# Use custom configuration file
-python train_mnist.py --config my_config.yaml
-
-# List available configurations
-python train_universal.py --list-configs
-```
-
-## Configuration
-
-Experiment configurations are stored in `experiment_configs/` as YAML files:
-
-```yaml
-# experiment_configs/mnist.yaml
-dataset: "mnist"
-batch_size: 128
-epochs: 100
-learning_rate: 0.001
-weight_decay: 0.001
-num_layers: 10
-# ... more parameters
+# Verify dataset can be read properly
+python -c "from src.dataloaders import distributed_data_generator; next(distributed_data_generator())"
 ```
 
 ## Implementation Details
 
-### NoProp Method
-- Each layer learns to denoise progressively less noisy label embeddings
-- Noise schedule: 0.9 → 0.01 across layers
-- Clean images provided to all layers (per Figure 1 in paper)
-- Independent layer training + classifier training every batch
-
-![image](image_assets/Figure1.png)
-
+### NoProp for Language Modeling
+- Each transformer layer learns to denoise progressively less noisy token embeddings
+- Progressive noise schedule applied across layers
+- Next-token prediction objective maintained throughout training
+- Independent layer training with separate optimizers
 
 ### Architecture
-- 10-layer denoising network (configurable)
-- Each layer is a separate `DenoisingModule`
-- Final classifier maps denoised embeddings to class predictions
+- Multi-layer transformer architecture
+- Each layer implemented as a denoising transformer block
+- Tokenization and embedding layers for text processing
+- Output projection to vocabulary for next-token prediction
 
 ### Training Process
-1. Each denoising layer trained independently with layer-specific noise
-2. Final classifier trained every batch using full inference pipeline  
-3. Separate optimizers for each component
-4. Gradient clipping for stability
+1. Input text tokenized and embedded
+2. Each transformer layer trained independently to denoise embeddings
+3. Progressive noise reduction across layers
+4. Next-token prediction loss computed at output layer
+5. Separate optimizers for each component
 
-## Results
-
-| Dataset    | Validation Accuracy (Reproduced) | Validation Accuracy (Paper) |
-|------------|-----------------------------------|------------------------------|
-| MNIST      | 99.5%                            | 99.5%                        |
-| CIFAR-10   | 78.4%                            | 79.25%                       |
-| CIFAR-100  | 53.5%                            | 45.9%                        |
+## Data Loading
+The project includes distributed data loading capabilities for the FineWeb dataset, with support for:
+- Multiple data files (8 shards)
+- GPU-based training (single or multi-GPU)
+- Efficient batching and tokenization
 
 ## Citation
 
